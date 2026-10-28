@@ -19,7 +19,8 @@ export STEP="${STEP:-1}"
 export PORT="${PORT:-7860}"
 export HOST=127.0.0.1
 
-if ! pgrep -f "tools/thermal_watchdog.sh" >/dev/null; then
+# pidfile check (pgrep -f could match any shell whose command line mentions the script)
+if ! kill -0 "$(cat "$W/.tmp/thermal_watchdog.pid" 2>/dev/null)" 2>/dev/null; then
   nohup "$W/tools/thermal_watchdog.sh" >/dev/null 2>&1 &
   echo "[sdv2] thermal watchdog started (log: .tmp/thermal.log)"
 fi

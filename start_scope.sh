@@ -44,7 +44,8 @@ grep -q 1 /sys/class/power_supply/A*/online 2>/dev/null || echo "[scope] WARNING
 
 # --- Thermal watchdog, live profile: kills GPU jobs if GPU>=90C (past its 87C target, in the
 # driver slowdown zone) or CPU>=103C, sustained ~30s ---
-if ! pgrep -f "tools/thermal_watchdog.sh" >/dev/null; then
+# pidfile check (pgrep -f could match any shell whose command line mentions the script)
+if ! kill -0 "$(cat "$W/.tmp/thermal_watchdog.pid" 2>/dev/null)" 2>/dev/null; then
   nohup "$W/tools/thermal_watchdog.sh" 90 103 10 >/dev/null 2>&1 &
   echo "[scope] thermal watchdog started (log: .tmp/thermal.log)"
 fi
@@ -75,6 +76,9 @@ export SCOPE_COMPILE_BLOCKS=1
 export SCOPE_FUSED_KV=1
 export SCOPE_COMPILE_TAE=1
 export SCOPE_PRELOAD_DEPTH=1
+# Latency: keep only a 3-frame cushion in the output queue (1.34 s -> 0.46 s, no added stutter)
+export SCOPE_OUTPUT_TARGET_FRAMES=3
+export SCOPE_SINK_QUEUE_MAX=12
 # SCOPE_KV_FRAMES=3 is ~10% faster but follows the camera framing less (see README); stock 6 kept.
 
 # --- Scope server (pinned to E-cores 6-13 to keep CPU package temps down) ---
@@ -100,7 +104,7 @@ if [ "$BRIDGE" = 1 ]; then
     "${REF_ARGS[@]}" &
   PIDS+=($!)
   echo "[scope] bridge: ${CAMERA:-/dev/video0} -> Scope (576x320) -> /dev/video10 (AI_Scope_Cam, 720x1280)"
-  echo "[scope] FPS slider: http://127.0.0.1:8090   (first ~30 s after start are slow while torch.compile warms up)"
+  echo "[scope] live controls (FPS, noise, reference, prompt): http://127.0.0.1:8090   (first ~30 s after start are slow while torch.compile warms up)"
 fi
 
 echo "[scope] Ctrl+C to stop."

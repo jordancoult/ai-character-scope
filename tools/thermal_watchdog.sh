@@ -9,11 +9,16 @@
 #                                                 so brief CPU spikes to 100-105 are within spec
 GPU_LIMIT="${1:-87}"; CPU_LIMIT="${2:-100}"; MAX_STRIKES="${3:-2}"
 LOG="$HOME/personal/ai-character-scope/.tmp/thermal.log"
+PIDFILE="$HOME/personal/ai-character-scope/.tmp/thermal_watchdog.pid"
+echo $$ > "$PIDFILE"
 strikes=0
 while true; do
   read -r GT GP GC <<<"$(nvidia-smi --query-gpu=temperature.gpu,power.draw,clocks.sm --format=csv,noheader,nounits | tr -d ',')"
   CT=$(( $(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1) / 1000 ))
-  echo "$(date +%T) gpu=${GT}C ${GP}W ${GC}MHz cpu_max=${CT}C" >> "$LOG"
+  # memory stall: % of the last 10 s that all tasks were blocked on memory (freeze indicator)
+  MEMFULL=$(awk '/^full/ {split($2, a, "="); print a[2]}' /proc/pressure/memory 2>/dev/null)
+  SWAP=$(awk '/SwapTotal/ {t=$2} /SwapFree/ {f=$2} END {printf "%.1f", (t-f)/1048576}' /proc/meminfo)
+  echo "$(date +%T) gpu=${GT}C ${GP}W ${GC}MHz cpu_max=${CT}C mem_stall=${MEMFULL}% swap=${SWAP}G" >> "$LOG"
   if [ "${GT%.*}" -ge "$GPU_LIMIT" ] || [ "$CT" -ge "$CPU_LIMIT" ]; then
     strikes=$((strikes + 1))
   else
