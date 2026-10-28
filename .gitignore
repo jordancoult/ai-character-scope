@@ -1,0 +1,17 @@
+# Upstream repos: use the forks (branch blackwell-realtime), see README.md
+/scope/
+/StreamDiffusionV2/
+# Weights, caches, environments, logs, local tools
+/models/
+/.cache/
+/.python/
+/.tmp/
+/bin/
+/.daydream-scope/
+/.claude/
+# Personal/large media (character art, test clips, benchmark videos)
+/assets/
+/bench/*
+!/bench/results.jsonl
+__pycache__/
+*.pyc
