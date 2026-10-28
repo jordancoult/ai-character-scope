@@ -70,6 +70,23 @@ The bridge: `tools/scope_bridge.py` (crops the camera to 9:16 and downscales *be
 GPU RGB→YUV). Options: `--preset`, `--upscale none|bicubic|bicubic-sharp|animevideov3|general-x4v3`,
 `--noise-scale` (0.75), `--vace-scale`, `--ref a.png [b.png]`.
 
+## Latency (camera frame in → character frame out, measured)
+
+`tools/latency_test.sh` streams `assets/latency_flash.mp4` (white flash every 5 s) and times each flash through the
+whole loop (`scope_bridge.py --latency-probe`). Stock Scope kept a full 30-frame output queue (it paces at exactly the
+production rate, so a backlog never drains):
+
+| Output cushion (`SCOPE_OUTPUT_TARGET_FRAMES`) | Latency | Stutters (gap > 66 ms) |
+|---|---|---|
+| stock (30-frame queue) | 1344 ms | — |
+| 6 | 569 ms | 3 / 1735 |
+| **3 (default)** | **462 ms** | 3 / 1734 |
+| 1 | 413 ms | 10 / 1737 |
+
+Breakdown at the default: input transport 36 ms · inside Scope 357 ms (chunk fill + model + cushion) · output
+transport 77 ms. Plus camera capture and the viewer (OBS) on top. Most of the rest is structural: the model works on
+4-frame chunks.
+
 ## How fast is it? (RTX 5080 Laptop, model-only, 576×320, character ref, 1 step)
 
 | Step | FPS | What changed |
