@@ -124,6 +124,11 @@ class CropResizeTrack(MediaStreamTrack):
 
     async def recv(self):
         frame = await self.source.recv()
+        q = getattr(self.source, "_queue", None)  # aiortc MediaPlayer's internal (unbounded) queue
+        if q is not None and args.latency_probe:
+            self._n = getattr(self, "_n", 0) + 1
+            if self._n % 150 == 0:
+                print(f"[camera] frames waiting in player queue: {q.qsize()}", flush=True)
         fw, fh = frame.width, frame.height
         target = self.width / self.height
         if abs(fw / fh - target) > 0.01:

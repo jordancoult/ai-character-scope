@@ -77,8 +77,10 @@ export SCOPE_FUSED_KV=1
 export SCOPE_COMPILE_TAE=1
 export SCOPE_PRELOAD_DEPTH=1
 # Latency: keep only a 3-frame cushion in the output queue (1.34 s -> 0.46 s, no added stutter)
-export SCOPE_OUTPUT_TARGET_FRAMES=3
-export SCOPE_SINK_QUEUE_MAX=12
+export SCOPE_OUTPUT_TARGET_FRAMES="${SCOPE_OUTPUT_TARGET_FRAMES:-3}"
+export SCOPE_SINK_QUEUE_MAX="${SCOPE_SINK_QUEUE_MAX:-12}"
+# Input side: keep at most 2 chunks of camera frames, dropping the oldest when the model is slower
+export SCOPE_INPUT_QUEUE_MAX="${SCOPE_INPUT_QUEUE_MAX:-8}"
 # SCOPE_KV_FRAMES=3 is ~10% faster but follows the camera framing less (see README); stock 6 kept.
 
 # --- Scope server (pinned to E-cores 6-13 to keep CPU package temps down) ---
