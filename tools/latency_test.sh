@@ -7,14 +7,14 @@ TAG="${1:-run}"; shift
 LOG=".tmp/latency_$TAG.log"
 # Precise cleanup: whatever holds the Scope port (name-matching could hit the caller's shell)
 fuser -k -TERM 8000/tcp >/dev/null 2>&1; sleep 2
-NO_AUDIO=1 setsid ./start_scope.sh > ".tmp/start_scope_$TAG.log" 2>&1 &
-SCOPE_PGID=$!
+NO_AUDIO=1 ./start_scope.sh > ".tmp/start_scope_$TAG.log" 2>&1 &
 for _ in $(seq 1 90); do curl -sf localhost:8000/api/v1/hardware/info >/dev/null && break; sleep 2; done
 T0=$(date +%T)
 taskset -c 6-13 scope/.venv/bin/python tools/scope_bridge.py --input assets/latency_flash.mp4 --output /dev/video10 \
   --ref assets/char_face.png --prompt "a pink starfish man in a black baseball cap and a gold chain, head and shoulders portrait, 3D Pixar style" \
   --latency-probe --duration 70 --control-port 0 "$@" > "$LOG" 2>&1
-kill -TERM -- "-$SCOPE_PGID" 2>/dev/null; sleep 3
+# Stop by port: the server exits, start_scope.sh's wait returns and its cleanup runs.
+fuser -k -TERM 8000/tcp >/dev/null 2>&1; sleep 4
 echo "== $TAG ($*)"
 grep -E "^\[latency\]" "$LOG" | awk '{print $2}' | tr '\n' ' '; echo
 grep -E "summary|\[smooth\]" "$LOG"

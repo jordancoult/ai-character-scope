@@ -83,6 +83,13 @@ export SCOPE_SINK_QUEUE_MAX="${SCOPE_SINK_QUEUE_MAX:-12}"
 export SCOPE_INPUT_QUEUE_MAX="${SCOPE_INPUT_QUEUE_MAX:-8}"
 # SCOPE_KV_FRAMES=3 is ~10% faster but follows the camera framing less (see README); stock 6 kept.
 
+# --- Refuse to start next to a stray server (the bridge would silently attach to it) ---
+if ss -ltn | grep -q ":$PORT "; then
+  echo "[scope] ERROR: port $PORT is already in use (another Scope server still running?)."
+  echo "[scope]        Stop it first:  fuser -k -TERM $PORT/tcp"
+  exit 1
+fi
+
 # --- Scope server (pinned to E-cores 6-13 to keep CPU package temps down) ---
 taskset -c 6-13 scope/.venv/bin/daydream-scope --host 127.0.0.1 --port "$PORT" --no-browser \
   > "$LOG_DIR/scope-server.log" 2>&1 &
