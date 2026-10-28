@@ -53,29 +53,34 @@ parser.add_argument("--ref", nargs="+", default=None, help="Character reference 
 parser.add_argument("--vace-scale", type=float, default=1.0)
 parser.add_argument("--noise-scale", type=float, default=0.75)
 parser.add_argument("--control-port", type=int, default=8090, help="Slider page port (0 = off)")
+parser.add_argument("--latency-probe", action="store_true",
+                    help="Measure end-to-end latency using bright flashes in the input (assets/latency_flash.mp4)")
+parser.add_argument("--record-input", default=None, help="Also save the cropped camera frames sent to Scope (.mp4)")
 parser.add_argument("--duration", type=float, default=0, help="Stop after N seconds (0 = run until Ctrl+C)")
 parser.add_argument("--no-load", action="store_true", help="Skip pipeline load (already loaded)")
 args = parser.parse_args()
 
 H, W = args.size
 OH, OW = args.out_size
-state = {"preset": args.preset, "fps": 0.0, "upscale": None}
+state = {"preset": args.preset, "fps": 0.0, "upscale": None, "noise": args.noise_scale,
+         "prompt": args.prompt, "ref": [str(Path(r).resolve()) for r in args.ref] if args.ref else []}
+ASSETS = Path(__file__).resolve().parents[1] / "assets"
+probe = {"in_edges": [], "in_prev": 0.0, "out_prev": None, "out_base": None, "lat": [], "recv_t": []}
 
 
 def preset_params(preset: int, with_ref: bool) -> dict:
     p = PRESETS[preset]
-    steps = p["steps"]
     params = {
-        "denoising_step_list": steps,
-        # one-step SDv2: the timestep must match the noise actually added to the camera latents
-        "noise_scale": args.noise_scale if len(steps) > 1 else steps[0] / 1000,
+        "denoising_step_list": p["steps"],
+        # Scope maps noise_scale to the first timestep (1000 * noise - 100)
+        "noise_scale": state["noise"],
         "noise_controller": False,
-        "depth_vace": p["depth_vace"] and bool(args.ref),
+        "depth_vace": p["depth_vace"] and bool(state["ref"]),
         "vace_use_input_video": False,
         "reset_cache": True,
     }
-    if with_ref and args.ref:
-        params["vace_ref_images"] = [str(Path(r).resolve()) for r in args.ref]
+    if with_ref and state["ref"]:
+        params["vace_ref_images"] = state["ref"]
         params["vace_context_scale"] = args.vace_scale
     return params
 
@@ -105,9 +110,17 @@ class CropResizeTrack(MediaStreamTrack):
 
     kind = "video"
 
-    def __init__(self, source, width, height):
+    def __init__(self, source, width, height, record=None):
         super().__init__()
         self.source, self.width, self.height = source, width, height
+        self.recorder = None
+        if record:
+            self.recorder = subprocess.Popen(
+                ["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p",
+                 "-s", f"{width}x{height}", "-r", "30", "-i", "-", "-c:v", "libx264",
+                 "-preset", "ultrafast", "-pix_fmt", "yuv420p", record],
+                stdin=subprocess.PIPE,
+            )
 
     async def recv(self):
         frame = await self.source.recv()
@@ -128,6 +141,13 @@ class CropResizeTrack(MediaStreamTrack):
             new = frame
         new = new.reformat(width=self.width, height=self.height, format="yuv420p")
         new.pts, new.time_base = frame.pts, frame.time_base
+        if args.latency_probe:
+            luma = float(new.to_ndarray(format="gray")[::8, ::8].mean())
+            if luma > 200 and probe["in_prev"] <= 200:
+                probe["in_edges"].append(time.perf_counter())
+            probe["in_prev"] = luma
+        if self.recorder:
+            self.recorder.stdin.write(new.to_ndarray(format="yuv420p").tobytes())  # unpadded planes
         return new
 
 
@@ -157,22 +177,38 @@ def rgb_to_yuv420p(x: torch.Tensor) -> bytes:
 
 
 CONTROL_PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Character FPS</title><style>
-:root{--bg:#111;--fg:#eee;--muted:#999;--accent:#ff4d6d}
-body{background:var(--bg);color:var(--fg);font:16px system-ui,sans-serif;margin:0;padding:24px 16px;max-width:520px}
-h1{font-size:20px;margin:0 0 16px} input[type=range]{width:100%;accent-color:var(--accent)}
-.ticks{display:flex;justify-content:space-between;color:var(--muted);font-size:13px}
-.big{font-size:40px;font-weight:600;margin:16px 0 4px} .muted{color:var(--muted)}
-</style></head><body><h1>AI character - quality vs FPS</h1>
-<input id="s" type="range" min="0" max="3" step="1"><div class="ticks"><span>15</span><span>20</span><span>24</span><span>30</span></div>
+<title>AI Character Controls</title><style>
+:root{--bg:#111;--fg:#eee;--muted:#999;--accent:#ff4d6d;--field:#1c1c1c}
+body{background:var(--bg);color:var(--fg);font:16px system-ui,sans-serif;margin:0;padding:24px 16px;max-width:560px}
+h1{font-size:20px;margin:0 0 16px} h2{font-size:15px;margin:22px 0 6px;color:var(--muted);font-weight:500}
+input[type=range]{width:100%;accent-color:var(--accent)} .ticks{display:flex;justify-content:space-between;color:var(--muted);font-size:13px}
+.big{font-size:40px;font-weight:600;margin:12px 0 2px} .muted{color:var(--muted);font-size:14px}
+textarea,select{width:100%;box-sizing:border-box;background:var(--field);color:var(--fg);border:1px solid #333;border-radius:6px;padding:8px;font:14px system-ui}
+button{margin-top:8px;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 14px;font:600 14px system-ui;cursor:pointer}
+</style></head><body><h1>AI character - live controls</h1>
 <div class="big"><span id="fps">-</span> fps</div><div class="muted" id="label"></div>
+<h2>Quality vs FPS</h2>
+<input id="s" type="range" min="0" max="3" step="1"><div class="ticks"><span>15</span><span>20</span><span>24</span><span>30</span></div>
+<h2>Noise: <span id="nv"></span> &nbsp;<span class="muted">lower = follows you more, higher = more character</span></h2>
+<input id="n" type="range" min="0.40" max="0.95" step="0.05">
+<h2>Reference image</h2><select id="ref"></select>
+<h2>Prompt</h2><textarea id="p" rows="4"></textarea><button id="pb">Apply prompt</button>
 <script>
-const steps=[15,20,24,30], s=document.getElementById('s');
+const steps=[15,20,24,30], s=document.getElementById('s'), n=document.getElementById('n'), ref=document.getElementById('ref'), p=document.getElementById('p');
+let loaded=false;
+const post=(url,body)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
 async function poll(){try{const r=await (await fetch('/state')).json();
  document.getElementById('fps').textContent=r.fps.toFixed(1);
- document.getElementById('label').textContent=r.label+' (upscale: '+r.upscale+')';
- if(document.activeElement!==s) s.value=steps.indexOf(r.preset);}catch(e){} }
-s.oninput=()=>fetch('/preset/'+steps[s.value],{method:'POST'}).then(poll);
+ document.getElementById('label').textContent=r.label+' | upscale: '+r.upscale;
+ document.getElementById('nv').textContent=r.noise.toFixed(2);
+ if(document.activeElement!==s) s.value=steps.indexOf(r.preset);
+ if(document.activeElement!==n) n.value=r.noise;
+ if(!loaded){p.value=r.prompt; ref.innerHTML=r.refs.map(f=>`<option ${r.ref.includes(f)?'selected':''}>${f}</option>`).join(''); loaded=true;}
+}catch(e){} }
+s.oninput=()=>post('/preset/'+steps[s.value]).then(poll);
+n.onchange=()=>post('/params',{noise:parseFloat(n.value)}).then(poll);
+ref.onchange=()=>post('/params',{ref:ref.value}).then(poll);
+document.getElementById('pb').onclick=()=>post('/params',{prompt:p.value}).then(poll);
 setInterval(poll,1000); poll();
 </script></body></html>"""
 
@@ -190,7 +226,8 @@ async def main() -> None:
 
         pc = RTCPeerConnection()
         channel = pc.createDataChannel("parameters", ordered=True)
-        pc.addTransceiver(CropResizeTrack(player.video, W, H), direction="sendrecv")
+        camera_track = CropResizeTrack(player.video, W, H, record=args.record_input)
+        pc.addTransceiver(camera_track, direction="sendrecv")
         done = asyncio.Event()
         ffmpeg = open_output()
         upscalers: dict[str, Upscaler] = {}
@@ -221,6 +258,21 @@ async def main() -> None:
                     img = frame.to_ndarray(format="rgb24")
                     if img.shape[:2] != (H, W):
                         continue  # skip pre-roll frames at a different size
+                    if args.latency_probe:
+                        now = time.perf_counter()
+                        probe["recv_t"].append(now)
+                        luma = float(img[::8, ::8].mean())
+                        base = probe["out_base"]
+                        probe["out_base"] = luma if base is None else 0.95 * base + 0.05 * min(luma, base + 20)
+                        prev = probe["out_prev"]
+                        # rising edge: much brighter than the running baseline, previous frame wasn't
+                        if base is not None and prev is not None and luma > base + 60 and prev <= base + 60:
+                            sent = [t for t in probe["in_edges"] if t < now]
+                            if sent:
+                                lat = now - sent[-1]
+                                probe["lat"].append(lat)
+                                print(f"[latency] {lat * 1000:6.0f} ms  sent={sent[-1]:.4f} recv={now:.4f}", flush=True)
+                        probe["out_prev"] = luma
                     x = torch.from_numpy(img).cuda().permute(2, 0, 1).float().div(255).unsqueeze(0)
                     y = current_upscaler()(x)[0]
                     ffmpeg.stdin.write(rgb_to_yuv420p(y))
@@ -240,7 +292,7 @@ async def main() -> None:
 
         await pc.setLocalDescription(await pc.createOffer())
         params = {"pipeline_ids": ["streamdiffusionv2"], "input_mode": "video",
-                  "prompts": [{"text": args.prompt, "weight": 1.0}], "manage_cache": True,
+                  "prompts": [{"text": state["prompt"], "weight": 1.0}], "manage_cache": True,
                   "vace_enabled": bool(args.ref), **preset_params(state["preset"], with_ref=True)}
         params.pop("reset_cache")
         r = await client.post("/api/v1/webrtc/offer", json={
@@ -257,7 +309,30 @@ async def main() -> None:
             app.router.add_get("/", lambda _: web.Response(text=CONTROL_PAGE, content_type="text/html"))
             app.router.add_get("/state", lambda _: web.json_response(
                 {"preset": state["preset"], "fps": state["fps"], "upscale": state["upscale"],
-                 "label": PRESETS[state["preset"]]["label"]}))
+                 "label": PRESETS[state["preset"]]["label"], "noise": state["noise"], "prompt": state["prompt"],
+                 "ref": [Path(r).name for r in state["ref"]],
+                 "refs": sorted(f.name for f in ASSETS.glob("*.png"))}))
+
+            async def set_params(request):
+                body = await request.json()
+                update = {}
+                if "noise" in body:
+                    state["noise"] = max(0.3, min(0.98, float(body["noise"])))
+                    update["noise_scale"] = state["noise"]
+                if "prompt" in body and body["prompt"].strip():
+                    state["prompt"] = body["prompt"].strip()
+                    update["prompts"] = [{"text": state["prompt"], "weight": 1.0}]
+                if "ref" in body:
+                    path = (ASSETS / Path(body["ref"]).name).resolve()
+                    if path.is_file():
+                        state["ref"] = [str(path)]
+                        update = preset_params(state["preset"], with_ref=True)  # re-send ref + reset cache
+                if update and channel.readyState == "open":
+                    channel.send(json.dumps(update))
+                print(f"[bridge] params -> {body}", flush=True)
+                return web.json_response({"ok": True})
+
+            app.router.add_post("/params", set_params)
 
             async def set_preset(request):
                 apply_preset(int(request.match_info["fps"]))
@@ -267,7 +342,7 @@ async def main() -> None:
             runner = web.AppRunner(app)
             await runner.setup()
             await web.TCPSite(runner, "127.0.0.1", args.control_port).start()
-            print(f"[bridge] FPS slider: http://127.0.0.1:{args.control_port}", flush=True)
+            print(f"[bridge] live controls: http://127.0.0.1:{args.control_port}", flush=True)
 
         try:
             if args.duration:
@@ -281,10 +356,24 @@ async def main() -> None:
                 await client.delete(f"/api/v1/webrtc/offer/{session_id}")
             except httpx.HTTPError:
                 pass  # server already gone (e.g. start_scope.sh shutting down)
+            if probe["lat"]:
+                lat = sorted(probe["lat"])
+                steady = lat if len(lat) < 4 else sorted(probe["lat"][2:])  # skip warm-up flashes
+                print(f"[latency] summary: n={len(lat)} median(all) {lat[len(lat) // 2] * 1000:.0f} ms, "
+                      f"median(after warm-up) {steady[len(steady) // 2] * 1000:.0f} ms, "
+                      f"min {lat[0] * 1000:.0f} ms, max {lat[-1] * 1000:.0f} ms", flush=True)
+            if len(probe["recv_t"]) > 300:
+                gaps = [b - a for a, b in zip(probe["recv_t"][150:], probe["recv_t"][151:])]  # skip warm-up
+                gaps_ms = sorted(g * 1000 for g in gaps)
+                print(f"[smooth] frame gap median {gaps_ms[len(gaps_ms) // 2]:.1f} ms, p95 {gaps_ms[int(len(gaps_ms) * .95)]:.1f} ms, "
+                      f"max {gaps_ms[-1]:.0f} ms, stutters(>66ms) {sum(g > 66 for g in gaps_ms)} / {len(gaps_ms)}", flush=True)
             if runner:
                 await runner.cleanup()
             await pc.close()
             player.video.stop()
+            if camera_track.recorder:
+                camera_track.recorder.stdin.close()
+                camera_track.recorder.wait()
             ffmpeg.stdin.close()
             ffmpeg.wait()
 
