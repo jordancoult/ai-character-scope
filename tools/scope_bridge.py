@@ -57,8 +57,8 @@ parser.add_argument("--prompt", default="a stylized 3D animated character, Pixar
 parser.add_argument("--ref", nargs="+", default=None, help="Character reference image(s) (VACE)")
 parser.add_argument("--vace-scale", type=float, default=1.0)
 parser.add_argument("--noise-scale", type=float, default=0.75)
-parser.add_argument("--noise-mode", default="auto", choices=["auto", "fixed", "random"],
-                    help="Per-chunk noise: auto = the preset's choice, fixed = same noise every chunk, random = new noise")
+parser.add_argument("--noise-mode", default="fixed", choices=["auto", "fixed", "random"],
+                    help="Per-chunk noise (default fixed): auto = the preset's choice, fixed = same noise every chunk, random = new noise")
 parser.add_argument("--control-port", type=int, default=8090, help="Slider page port (0 = off)")
 parser.add_argument("--latency-probe", action="store_true",
                     help="Measure end-to-end latency using bright flashes in the input (assets/latency_flash.mp4)")
