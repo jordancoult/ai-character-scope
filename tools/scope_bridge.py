@@ -33,10 +33,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 from upscalers import Upscaler  # noqa: E402
 
 PRESETS = {
-    30: {"label": "30 fps - fast", "depth_vace": False, "steps": [750], "upscale": "bicubic-sharp"},
-    24: {"label": "24 fps - fast, 2-step (cleanest)", "depth_vace": False, "steps": [750, 400], "upscale": "bicubic-sharp"},
-    20: {"label": "20 fps - depth-guided pose", "depth_vace": True, "steps": [750], "upscale": "bicubic-sharp"},
-    15: {"label": "15 fps - depth-guided, 2-step", "depth_vace": True, "steps": [750, 400], "upscale": "bicubic-sharp"},
+    # Chosen by tools/quality_metrics.py sweeps on a real webcam clip (README: "Quality sweep").
+    30: {"label": "30 fps - fast (1 step)", "depth_vace": False, "steps": [750], "fixed_noise": False,
+         "upscale": "bicubic-sharp"},
+    24: {"label": "~25 fps - clean (2 steps, fixed noise)", "depth_vace": False, "steps": [750, 400],
+         "fixed_noise": True, "upscale": "bicubic-sharp"},
+    20: {"label": "~16 fps - pose-tracked (depth, 2 steps, fixed noise)", "depth_vace": True, "steps": [750, 400],
+         "fixed_noise": True, "upscale": "bicubic-sharp"},
+    15: {"label": "~16 fps - pose-tracked, max realism (depth, 2 steps, random noise)", "depth_vace": True,
+         "steps": [750, 400], "fixed_noise": False, "upscale": "bicubic-sharp"},
 }
 
 parser = argparse.ArgumentParser()
@@ -75,6 +80,7 @@ def preset_params(preset: int, with_ref: bool) -> dict:
         # Scope maps noise_scale to the first timestep (1000 * noise - 100)
         "noise_scale": state["noise"],
         "noise_controller": False,
+        "fixed_noise": p.get("fixed_noise", False),
         "depth_vace": p["depth_vace"] and bool(state["ref"]),
         "vace_use_input_video": False,
         "reset_cache": True,
@@ -197,6 +203,7 @@ button{margin-top:8px;background:var(--accent);color:#fff;border:0;border-radius
 <h2>Noise: <span id="nv"></span> &nbsp;<span class="muted">lower = follows you more, higher = more character</span></h2>
 <input id="n" type="range" min="0.40" max="0.95" step="0.05">
 <h2>Reference image</h2><select id="ref"></select>
+<button id="rb">Refresh character (reset cache)</button>
 <h2>Prompt</h2><textarea id="p" rows="4"></textarea><button id="pb">Apply prompt</button>
 <script>
 const steps=[15,20,24,30], s=document.getElementById('s'), n=document.getElementById('n'), ref=document.getElementById('ref'), p=document.getElementById('p');
@@ -214,6 +221,7 @@ s.oninput=()=>post('/preset/'+steps[s.value]).then(poll);
 n.onchange=()=>post('/params',{noise:parseFloat(n.value)}).then(poll);
 ref.onchange=()=>post('/params',{ref:ref.value}).then(poll);
 document.getElementById('pb').onclick=()=>post('/params',{prompt:p.value}).then(poll);
+document.getElementById('rb').onclick=()=>post('/refresh').then(poll);
 setInterval(poll,1000); poll();
 </script></body></html>"""
 
@@ -338,6 +346,14 @@ async def main() -> None:
                 return web.json_response({"ok": True})
 
             app.router.add_post("/params", set_params)
+
+            async def refresh(request):
+                if channel.readyState == "open":
+                    channel.send(json.dumps(preset_params(state["preset"], with_ref=True)))  # reset + ref
+                print("[bridge] cache refresh", flush=True)
+                return web.json_response({"ok": True})
+
+            app.router.add_post("/refresh", refresh)
 
             async def set_preset(request):
                 apply_preset(int(request.match_info["fps"]))

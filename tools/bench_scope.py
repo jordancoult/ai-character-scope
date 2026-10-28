@@ -28,6 +28,7 @@ parser.add_argument("--steps", type=int, nargs="+", default=[750, 250])
 parser.add_argument("--fp8", action="store_true")
 parser.add_argument("--vace-ref", nargs="+", default=None, help="Reference image path(s) (enables VACE)")
 parser.add_argument("--chunk", type=int, default=4, help="Input frames per call")
+parser.add_argument("--max-seconds", type=float, default=None, help="Single pass over the first N seconds; --out saves every frame")
 parser.add_argument("--video", default=str(ASSET))
 parser.add_argument("--out", default=None, help="Optional mp4 path for the output")
 parser.add_argument("--tag", default="")
@@ -155,8 +156,16 @@ torch.cuda.reset_peak_memory_stats()
 outputs, timings = [], []
 start_idx, end_idx = 0, args.chunk + 1
 first = True
-# Loop the clip so we measure a few hundred frames of steady state.
-for _ in range(3):
+writer = None
+if args.out and args.max_seconds:
+    import subprocess
+
+    writer = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                               "-s", f"{w}x{h}", "-r", "30", "-i", "-", "-c:v", "libx264", "-crf", "16",
+                               "-preset", "veryfast", "-pix_fmt", "yuv420p", args.out], stdin=subprocess.PIPE)
+    num_frames = min(num_frames, int(args.max_seconds * 30))
+# Loop the clip so we measure a few hundred frames of steady state (single pass with --max-seconds).
+for _ in range(1 if args.max_seconds else 3):
     start_idx, end_idx = 0, args.chunk + 1 if first else args.chunk
     while end_idx <= num_frames:
         chunk = video[:, :, start_idx:end_idx]
@@ -183,7 +192,10 @@ for _ in range(3):
         out = pipeline(**kwargs)["video"]
         torch.cuda.synchronize()
         timings.append((out.shape[0], time.perf_counter() - t))
-        if args.out and len(outputs) < 40:
+        if writer is not None:
+            frames_u8 = (out.float().clamp(0, 1) * 255).to(torch.uint8) if out.dtype != torch.uint8 else out
+            writer.stdin.write(frames_u8.contiguous().cpu().numpy().tobytes())
+        elif args.out and len(outputs) < 40:
             outputs.append(out.detach().cpu())
         first = False
         start_idx, end_idx = end_idx, end_idx + args.chunk
@@ -240,6 +252,7 @@ result = {
     "noise": args.noise_scale,
     "vace_scale": args.vace_scale,
     "kv_frames": args.kv_frames or 6,
+    "fixed_noise": os.environ.get("SCOPE_FIXED_NOISE") == "1",
     "fps": round(frames / secs, 2),
     "chunk_latency_ms": round(1000 * secs / len(steady), 1),
     "peak_vram_gb": round(torch.cuda.max_memory_reserved() / 2**30, 2),
@@ -254,7 +267,10 @@ if block_cpu:
         print(f"  {k:24s} {1000 * v / len(timings):7.2f} ms")
     print(f"  {'(sum)':24s} {1000 * total / len(timings):7.2f} ms  vs wall {result['chunk_latency_ms']} ms")
 
-if args.out:
+if writer is not None:
+    writer.stdin.close()
+    writer.wait()
+elif args.out:
     from diffusers.utils import export_to_video
 
     import av

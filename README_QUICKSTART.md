@@ -70,6 +70,28 @@ The bridge: `tools/scope_bridge.py` (crops the camera to 9:16 and downscales *be
 GPU RGB→YUV). Options: `--preset`, `--upscale none|bicubic|bicubic-sharp|animevideov3|general-x4v3`,
 `--noise-scale` (0.75), `--vace-scale`, `--ref a.png [b.png]`.
 
+## Quality sweep (realism first)
+
+`tools/quality_metrics.py` scores clips rendered offline from a real webcam recording (`bench_scope.py
+--max-seconds 40 --out`): **realism** (CLIP no-reference score, weighted most), **invented motion** (output
+change 250 ms apart where the input was still), **flicker** (frame-to-frame fine detail), **adherence**
+(depth correlation with the input) and **drift**. Blonde reference, 576×320, model-only FPS:
+
+| Config | Realism | Invented motion | Flicker | Adherence | FPS |
+|---|---|---|---|---|---|
+| 1 step, random noise (old 30 preset) | 0.53 | 0.024 | 0.0034 | 0.34 | 40 |
+| 2 steps, random noise | 0.77 | 0.027 | 0.0039 | 0.26 | 26 |
+| 2 steps, **fixed noise** | 0.73 | 0.018 | 0.0018 | 0.32 | 26 |
+| **depth + 2 steps + fixed noise** | 0.69 | 0.019 | 0.0030 | **0.47** | 18 |
+| **depth + 2 steps + random noise** | **0.75** | 0.021 | 0.0039 | 0.46 | 18 |
+| 3 steps / 9-frame history / noise 0.6 / weaker ref | no better | | | | |
+| *your camera (reference)* | — | *0.0015* | *0.0017* | — | — |
+
+Findings: fixed noise halves flicker at 2 steps (but leaves a haze at 1 step); depth guidance is the only thing
+that stops head-turn overshoot (adherence 0.32 → 0.47); invented motion stays ~10× the camera's in every config
+(feedback through the attention cache). A cache reset visibly cleans up accumulated degradation — the controls
+page has a **Refresh character** button.
+
 ## Latency (camera frame in → character frame out, measured)
 
 `tools/latency_test.sh` streams `assets/latency_flash.mp4` (white flash every 5 s) and times each flash through the
