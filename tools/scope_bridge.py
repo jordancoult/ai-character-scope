@@ -89,7 +89,8 @@ def preset_params(preset: int, with_ref: bool) -> dict:
         "noise_scale": state["noise"],
         "noise_controller": False,
         "fixed_noise": fixed_noise(preset),
-        "depth_vace": p["depth_vace"] and bool(state["ref"]),
+        # depth works without a ref image, but needs VACE (loaded only when started with --ref)
+        "depth_vace": p["depth_vace"] and bool(args.ref),
         "vace_use_input_video": False,
         "reset_cache": True,
     }
@@ -225,7 +226,7 @@ async function poll(){try{const r=await (await fetch('/state')).json();
  if(document.activeElement!==s) s.value=steps.indexOf(r.preset);
  if(document.activeElement!==n) n.value=r.noise;
  if(document.activeElement!==nm) nm.value=r.noise_mode;
- if(!loaded){p.value=r.prompt; ref.innerHTML=r.refs.map(f=>`<option ${r.ref.includes(f)?'selected':''}>${f}</option>`).join(''); loaded=true;}
+ if(!loaded){p.value=r.prompt; ref.innerHTML='<option value="">(none - prompt only)</option>'+r.refs.map(f=>`<option ${r.ref.includes(f)?'selected':''}>${f}</option>`).join(''); loaded=true;}
 }catch(e){} }
 s.oninput=()=>post('/preset/'+steps[s.value]).then(poll);
 n.onchange=()=>post('/params',{noise:parseFloat(n.value)}).then(poll);
@@ -350,7 +351,10 @@ async def main() -> None:
                 if "prompt" in body and body["prompt"].strip():
                     state["prompt"] = body["prompt"].strip()
                     update["prompts"] = [{"text": state["prompt"], "weight": 1.0}]
-                if "ref" in body:
+                if body.get("ref") == "":  # "(none)": prompt only
+                    state["ref"] = []
+                    update = preset_params(state["preset"], with_ref=True)  # reset cache without a ref
+                elif "ref" in body:
                     path = (ASSETS / Path(body["ref"]).name).resolve()
                     if path.is_file():
                         state["ref"] = [str(path)]

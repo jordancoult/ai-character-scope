@@ -90,7 +90,7 @@ change 250 ms apart where the input was still), **flicker** (frame-to-frame fine
 Findings: fixed noise halves flicker at 2 steps (but leaves a haze at 1 step); depth guidance is the only thing
 that stops head-turn overshoot (adherence 0.32 → 0.47); invented motion stays ~10× the camera's in every config
 (feedback through the attention cache). A cache reset visibly cleans up accumulated degradation — the controls
-page has a **Refresh character** button. A **Noise pattern** dropdown (fixed by default; random / auto, or `NOISE_MODE=`) overrides
+page has a **Refresh character** button. The reference dropdown has **(none - prompt only)**: same speed (the ref is encoded once into the cache at reset, not per chunk), the prompt alone sets the look, and in a quick test head turns followed the input more closely. A **Noise pattern** dropdown (fixed by default; random / auto, or `NOISE_MODE=`) overrides
 the preset's fixed-noise choice live.
 
 ## Latency (camera frame in → character frame out, measured)
