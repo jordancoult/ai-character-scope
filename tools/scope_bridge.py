@@ -57,6 +57,8 @@ parser.add_argument("--prompt", default="a stylized 3D animated character, Pixar
 parser.add_argument("--ref", nargs="+", default=None, help="Character reference image(s) (VACE)")
 parser.add_argument("--vace-scale", type=float, default=1.0)
 parser.add_argument("--noise-scale", type=float, default=0.75)
+parser.add_argument("--noise-mode", default="auto", choices=["auto", "fixed", "random"],
+                    help="Per-chunk noise: auto = the preset's choice, fixed = same noise every chunk, random = new noise")
 parser.add_argument("--control-port", type=int, default=8090, help="Slider page port (0 = off)")
 parser.add_argument("--latency-probe", action="store_true",
                     help="Measure end-to-end latency using bright flashes in the input (assets/latency_flash.mp4)")
@@ -68,9 +70,15 @@ args = parser.parse_args()
 H, W = args.size
 OH, OW = args.out_size
 state = {"preset": args.preset, "fps": 0.0, "upscale": None, "noise": args.noise_scale,
+         "noise_mode": args.noise_mode,
          "prompt": args.prompt, "ref": [str(Path(r).resolve()) for r in args.ref] if args.ref else []}
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 probe = {"in_edges": [], "in_prev": 0.0, "out_prev": None, "out_base": None, "lat": [], "recv_t": []}
+
+
+def fixed_noise(preset: int) -> bool:
+    mode = state["noise_mode"]
+    return PRESETS[preset].get("fixed_noise", False) if mode == "auto" else mode == "fixed"
 
 
 def preset_params(preset: int, with_ref: bool) -> dict:
@@ -80,7 +88,7 @@ def preset_params(preset: int, with_ref: bool) -> dict:
         # Scope maps noise_scale to the first timestep (1000 * noise - 100)
         "noise_scale": state["noise"],
         "noise_controller": False,
-        "fixed_noise": p.get("fixed_noise", False),
+        "fixed_noise": fixed_noise(preset),
         "depth_vace": p["depth_vace"] and bool(state["ref"]),
         "vace_use_input_video": False,
         "reset_cache": True,
@@ -202,23 +210,26 @@ button{margin-top:8px;background:var(--accent);color:#fff;border:0;border-radius
 <input id="s" type="range" min="0" max="3" step="1"><div class="ticks"><span>15</span><span>20</span><span>24</span><span>30</span></div>
 <h2>Noise: <span id="nv"></span> &nbsp;<span class="muted">lower = follows you more, higher = more character</span></h2>
 <input id="n" type="range" min="0.40" max="0.95" step="0.05">
+<h2>Noise pattern</h2><select id="nm"><option value="auto">auto (preset default)</option><option value="fixed">fixed (same every chunk: less shimmer)</option><option value="random">random (new every chunk)</option></select>
 <h2>Reference image</h2><select id="ref"></select>
 <button id="rb">Refresh character (reset cache)</button>
 <h2>Prompt</h2><textarea id="p" rows="4"></textarea><button id="pb">Apply prompt</button>
 <script>
-const steps=[15,20,24,30], s=document.getElementById('s'), n=document.getElementById('n'), ref=document.getElementById('ref'), p=document.getElementById('p');
+const steps=[15,20,24,30], s=document.getElementById('s'), n=document.getElementById('n'), ref=document.getElementById('ref'), p=document.getElementById('p'), nm=document.getElementById('nm');
 let loaded=false;
 const post=(url,body)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
 async function poll(){try{const r=await (await fetch('/state')).json();
  document.getElementById('fps').textContent=r.fps.toFixed(1);
- document.getElementById('label').textContent=r.label+' | upscale: '+r.upscale;
+ document.getElementById('label').textContent=r.label+' | noise: '+(r.fixed_noise?'fixed':'random')+' | upscale: '+r.upscale;
  document.getElementById('nv').textContent=r.noise.toFixed(2);
  if(document.activeElement!==s) s.value=steps.indexOf(r.preset);
  if(document.activeElement!==n) n.value=r.noise;
+ if(document.activeElement!==nm) nm.value=r.noise_mode;
  if(!loaded){p.value=r.prompt; ref.innerHTML=r.refs.map(f=>`<option ${r.ref.includes(f)?'selected':''}>${f}</option>`).join(''); loaded=true;}
 }catch(e){} }
 s.oninput=()=>post('/preset/'+steps[s.value]).then(poll);
 n.onchange=()=>post('/params',{noise:parseFloat(n.value)}).then(poll);
+nm.onchange=()=>post('/params',{noise_mode:nm.value}).then(poll);
 ref.onchange=()=>post('/params',{ref:ref.value}).then(poll);
 document.getElementById('pb').onclick=()=>post('/params',{prompt:p.value}).then(poll);
 document.getElementById('rb').onclick=()=>post('/refresh').then(poll);
@@ -322,7 +333,8 @@ async def main() -> None:
             app.router.add_get("/", lambda _: web.Response(text=CONTROL_PAGE, content_type="text/html"))
             app.router.add_get("/state", lambda _: web.json_response(
                 {"preset": state["preset"], "fps": state["fps"], "upscale": state["upscale"],
-                 "label": PRESETS[state["preset"]]["label"], "noise": state["noise"], "prompt": state["prompt"],
+                 "label": PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
+                 "fixed_noise": fixed_noise(state["preset"]), "prompt": state["prompt"],
                  "ref": [Path(r).name for r in state["ref"]],
                  "refs": sorted(f.name for f in ASSETS.glob("*.png"))}))
 
@@ -332,6 +344,9 @@ async def main() -> None:
                 if "noise" in body:
                     state["noise"] = max(0.3, min(0.98, float(body["noise"])))
                     update["noise_scale"] = state["noise"]
+                if body.get("noise_mode") in ("auto", "fixed", "random"):
+                    state["noise_mode"] = body["noise_mode"]
+                    update["fixed_noise"] = fixed_noise(state["preset"])
                 if "prompt" in body and body["prompt"].strip():
                     state["prompt"] = body["prompt"].strip()
                     update["prompts"] = [{"text": state["prompt"], "weight": 1.0}]

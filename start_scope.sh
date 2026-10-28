@@ -8,6 +8,7 @@
 #   CHARACTER_REF="a.png [b.png]"         reference image(s) for VACE (omit for prompt-only)
 #   PROMPT="..."                          text prompt describing the character
 #   PRESET=30|24|20|15                    starting FPS preset (change live on the slider page)
+#   NOISE_MODE=auto|fixed|random          per-chunk noise pattern (auto = preset default; also on the page)
 #   CAMERA=/dev/video0  CAMERA_SIZE=1280x720
 #   AUDIO_DELAY_MS=350                    delay applied to the AI_Character_Mic virtual mic
 #   NO_AUDIO=1                            skip creating the virtual mic
@@ -108,7 +109,7 @@ if [ "$BRIDGE" = 1 ]; then
   REF_ARGS=(); [ -n "${CHARACTER_REF:-}" ] && read -r -a REFS <<<"$CHARACTER_REF" && REF_ARGS=(--ref "${REFS[@]}")
   taskset -c 6-13 scope/.venv/bin/python tools/scope_bridge.py \
     --server "http://127.0.0.1:$PORT" --input "${CAMERA:-/dev/video0}" --input-size "${CAMERA_SIZE:-1280x720}" \
-    --output /dev/video10 --preset "${PRESET:-30}" \
+    --output /dev/video10 --preset "${PRESET:-30}" --noise-mode "${NOISE_MODE:-auto}" \
     --prompt "${PROMPT:-a stylized 3D animated character, Pixar style render}" \
     "${REF_ARGS[@]}" &
   PIDS+=($!)
