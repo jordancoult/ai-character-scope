@@ -70,12 +70,12 @@ if [ "${NO_AUDIO:-0}" != 1 ] && command -v pactl >/dev/null; then
 fi
 
 # --- Blackwell speedups (local Scope patches): fp8 row-wise GEMMs + compiled blocks ---
-export SCOPE_FP8_ROWWISE=1
-export SCOPE_COMPILE_BLOCKS=1
+export SCOPE_FP8_ROWWISE="${SCOPE_FP8_ROWWISE:-1}"
+export SCOPE_COMPILE_BLOCKS="${SCOPE_COMPILE_BLOCKS:-1}"
 # Fold the clean-KV refresh into the next chunk's forward (one DiT pass per chunk instead of two)
-export SCOPE_FUSED_KV=1
-export SCOPE_COMPILE_TAE=1
-export SCOPE_PRELOAD_DEPTH=1
+export SCOPE_FUSED_KV="${SCOPE_FUSED_KV:-1}"
+export SCOPE_COMPILE_TAE="${SCOPE_COMPILE_TAE:-1}"
+export SCOPE_PRELOAD_DEPTH="${SCOPE_PRELOAD_DEPTH:-1}"
 # Latency: keep only a 3-frame cushion in the output queue (1.34 s -> 0.46 s, no added stutter)
 export SCOPE_OUTPUT_TARGET_FRAMES="${SCOPE_OUTPUT_TARGET_FRAMES:-3}"
 export SCOPE_SINK_QUEUE_MAX="${SCOPE_SINK_QUEUE_MAX:-12}"
