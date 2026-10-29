@@ -56,9 +56,15 @@ parser.add_argument("--upscale", default=None, help="Override preset upscaler: n
 parser.add_argument("--prompt", default="a stylized 3D animated character, Pixar style render")
 parser.add_argument("--ref", nargs="+", default=None, help="Character reference image(s) (VACE)")
 parser.add_argument("--vace-scale", type=float, default=1.0)
-parser.add_argument("--noise-scale", type=float, default=0.75)
-parser.add_argument("--noise-mode", default="fixed", choices=["auto", "fixed", "random"],
-                    help="Per-chunk noise (default fixed): auto = the preset's choice, fixed = same noise every chunk, random = new noise")
+parser.add_argument("--noise-scale", type=float, default=None, help="Default 0.75 (0.9 for longlive, which follows the camera more)")
+parser.add_argument("--pipeline", default="streamdiffusionv2", choices=["streamdiffusionv2", "longlive"],
+                    help="longlive = experimental: trained for long streams (frame sink + KV recache), "
+                         "3 latent frames per chunk, no depth presets, no Blackwell speed patches")
+parser.add_argument("--vae", default=None, choices=["tae", "lighttae", "wan", "lightvae"],
+                    help="Override the VAE (default: tae for streamdiffusionv2, lighttae for longlive)")
+parser.add_argument("--steps", type=int, nargs="+", default=None, help="Override every preset's denoising steps")
+parser.add_argument("--noise-mode", default=None, choices=["auto", "fixed", "random"],
+                    help="Per-chunk noise (default fixed; random for longlive, where fixed noise piles up as confetti): auto = the preset's choice, fixed = same noise every chunk, random = new noise")
 parser.add_argument("--control-port", type=int, default=8090, help="Slider page port (0 = off)")
 parser.add_argument("--latency-probe", action="store_true",
                     help="Measure end-to-end latency using bright flashes in the input (assets/latency_flash.mp4)")
@@ -66,6 +72,10 @@ parser.add_argument("--record-input", default=None, help="Also save the cropped 
 parser.add_argument("--duration", type=float, default=0, help="Stop after N seconds (0 = run until Ctrl+C)")
 parser.add_argument("--no-load", action="store_true", help="Skip pipeline load (already loaded)")
 args = parser.parse_args()
+if args.noise_scale is None:
+    args.noise_scale = 0.9 if args.pipeline == "longlive" else 0.75
+if args.noise_mode is None:
+    args.noise_mode = "random" if args.pipeline == "longlive" else "fixed"
 
 H, W = args.size
 OH, OW = args.out_size
@@ -84,13 +94,13 @@ def fixed_noise(preset: int) -> bool:
 def preset_params(preset: int, with_ref: bool) -> dict:
     p = PRESETS[preset]
     params = {
-        "denoising_step_list": p["steps"],
+        "denoising_step_list": args.steps or p["steps"],
         # Scope maps noise_scale to the first timestep (1000 * noise - 100)
         "noise_scale": state["noise"],
         "noise_controller": False,
         "fixed_noise": fixed_noise(preset),
         # depth works without a ref image, but needs VACE (loaded only when started with --ref)
-        "depth_vace": p["depth_vace"] and bool(args.ref),
+        "depth_vace": p["depth_vace"] and bool(args.ref) and args.pipeline == "streamdiffusionv2",
         "vace_use_input_video": False,
         "reset_cache": True,
     }
@@ -101,11 +111,13 @@ def preset_params(preset: int, with_ref: bool) -> dict:
 
 
 async def load_pipeline(client: httpx.AsyncClient) -> None:
-    load_params = {"height": H, "width": W, "vae_type": "tae", "vace_enabled": bool(args.ref)}
+    # LongLive expects normalized latents: lighttae (tae is raw, only right for our StreamDiffusionV2 patch)
+    vae = args.vae or ("lighttae" if args.pipeline == "longlive" else "tae")
+    load_params = {"height": H, "width": W, "vae_type": vae, "vace_enabled": bool(args.ref)}
     r = await client.post("/api/v1/pipeline/load",
-                          json={"pipeline_ids": ["streamdiffusionv2"], "load_params": load_params})
+                          json={"pipeline_ids": [args.pipeline], "load_params": load_params})
     r.raise_for_status()
-    print(f"[bridge] loading streamdiffusionv2 {load_params} ...", flush=True)
+    print(f"[bridge] loading {args.pipeline} {load_params} ...", flush=True)
     while True:
         status = (await client.get("/api/v1/pipeline/status")).json()
         if status.get("status") == "loaded":
@@ -316,7 +328,7 @@ async def main() -> None:
             apply_preset(state["preset"])
 
         await pc.setLocalDescription(await pc.createOffer())
-        params = {"pipeline_ids": ["streamdiffusionv2"], "input_mode": "video",
+        params = {"pipeline_ids": [args.pipeline], "input_mode": "video",
                   "prompts": [{"text": state["prompt"], "weight": 1.0}], "manage_cache": True,
                   "vace_enabled": bool(args.ref), **preset_params(state["preset"], with_ref=True)}
         params.pop("reset_cache")
@@ -334,7 +346,7 @@ async def main() -> None:
             app.router.add_get("/", lambda _: web.Response(text=CONTROL_PAGE, content_type="text/html"))
             app.router.add_get("/state", lambda _: web.json_response(
                 {"preset": state["preset"], "fps": state["fps"], "upscale": state["upscale"],
-                 "label": PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
+                 "label": ("[LongLive] " if args.pipeline == "longlive" else "") + PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
                  "fixed_noise": fixed_noise(state["preset"]), "prompt": state["prompt"],
                  "ref": [Path(r).name for r in state["ref"]],
                  "refs": sorted(f.name for f in ASSETS.glob("*.png"))}))

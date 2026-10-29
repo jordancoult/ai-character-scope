@@ -8,6 +8,7 @@
 #   CHARACTER_REF="a.png [b.png]"         reference image(s) for VACE (omit for prompt-only)
 #   PROMPT="..."                          text prompt describing the character
 #   PRESET=30|24|20|15                    starting FPS preset (change live on the slider page)
+#   MODEL=streamdiffusionv2|longlive      model (default streamdiffusionv2; longlive = experimental, no depth presets)
 #   NOISE_MODE=fixed|random|auto          per-chunk noise pattern (default fixed; auto = preset choice; also on the page)
 #   CAMERA=/dev/video0  CAMERA_SIZE=1280x720
 #   AUDIO_DELAY_MS=350                    delay applied to the AI_Character_Mic virtual mic
@@ -75,6 +76,8 @@ export SCOPE_FP8_ROWWISE="${SCOPE_FP8_ROWWISE:-1}"
 export SCOPE_COMPILE_BLOCKS="${SCOPE_COMPILE_BLOCKS:-1}"
 # Fold the clean-KV refresh into the next chunk's forward (one DiT pass per chunk instead of two)
 export SCOPE_FUSED_KV="${SCOPE_FUSED_KV:-1}"
+# LongLive shares the denoise/clean-KV blocks but its model has no fused-prefix support
+[ "${MODEL:-streamdiffusionv2}" = longlive ] && export SCOPE_FUSED_KV=0
 export SCOPE_COMPILE_TAE="${SCOPE_COMPILE_TAE:-1}"
 export SCOPE_PRELOAD_DEPTH="${SCOPE_PRELOAD_DEPTH:-1}"
 # Latency: keep only a 3-frame cushion in the output queue (1.34 s -> 0.46 s, no added stutter)
@@ -109,7 +112,8 @@ if [ "$BRIDGE" = 1 ]; then
   REF_ARGS=(); [ -n "${CHARACTER_REF:-}" ] && read -r -a REFS <<<"$CHARACTER_REF" && REF_ARGS=(--ref "${REFS[@]}")
   taskset -c 6-13 scope/.venv/bin/python tools/scope_bridge.py \
     --server "http://127.0.0.1:$PORT" --input "${CAMERA:-/dev/video0}" --input-size "${CAMERA_SIZE:-1280x720}" \
-    --output /dev/video10 --preset "${PRESET:-30}" --noise-mode "${NOISE_MODE:-fixed}" \
+    --output /dev/video10 --preset "${PRESET:-30}" ${NOISE_MODE:+--noise-mode "$NOISE_MODE"} \
+    --pipeline "${MODEL:-streamdiffusionv2}" \
     --prompt "${PROMPT:-a stylized 3D animated character, Pixar style render}" \
     "${REF_ARGS[@]}" &
   PIDS+=($!)

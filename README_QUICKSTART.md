@@ -93,6 +93,19 @@ that stops head-turn overshoot (adherence 0.32 → 0.47); invented motion stays 
 page has a **Refresh character** button. The reference dropdown has **(none - prompt only)**: same speed (the ref is encoded once into the cache at reset, not per chunk), the prompt alone sets the look, and in a quick test head turns followed the input more closely. A **Noise pattern** dropdown (fixed by default; random / auto, or `NOISE_MODE=`) overrides
 the preset's fixed-noise choice live.
 
+## Experimental: LongLive (`MODEL=longlive`)
+
+`MODEL=longlive ./start_scope.sh --bridge` swaps in NVIDIA's LongLive (Scope ships the pipeline; weights in
+`models/LongLive-1.3B`, ~8.5 GB). It is trained for long streams (frame sink + KV recache) and keeps a bigger
+memory (12 latent frames, 3 per chunk). Same presets and controls page; depth presets fall back to no depth.
+
+- Its built-in LoRA is merged and the model converted to fp8 row-wise at load (bf16 + LoRA + VACE doesn't fit
+  in 16 GB; torchao fp8 fails on it). ~21 FPS on the 24 preset, 12.9 GB VRAM. lighttae VAE (it expects
+  normalized latents); fused KV is turned off (its model can't take the fused prefix).
+- Defaults to **random noise** (fixed noise piles up into confetti) and noise 0.9 (at 0.75 it barely changes the camera).
+- **Status:** the character appears, but bright sparkle dots cover the frame and grow over time. Not caused by
+  fp8, the VAE, the step schedule or portrait orientation (all tested); unresolved.
+
 ## Latency (camera frame in → character frame out, measured)
 
 `tools/latency_test.sh` streams `assets/latency_flash.mp4` (white flash every 5 s) and times each flash through the
