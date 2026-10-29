@@ -79,6 +79,9 @@ export SCOPE_FUSED_KV="${SCOPE_FUSED_KV:-1}"
 # LongLive shares the denoise/clean-KV blocks but its model has no fused-prefix support
 [ "${MODEL:-streamdiffusionv2}" = longlive ] && export SCOPE_FUSED_KV=0
 export SCOPE_COMPILE_TAE="${SCOPE_COMPILE_TAE:-1}"
+# Tell the model the true noise level (stock Scope says 100 less): removes residual-noise sparkles,
+# 1-step realism 0.50 -> 0.75; LongLive is unusable without it. 100 = stock behavior.
+export SCOPE_NOISE_T_OFFSET="${SCOPE_NOISE_T_OFFSET:-0}"
 export SCOPE_PRELOAD_DEPTH="${SCOPE_PRELOAD_DEPTH:-1}"
 # Latency: keep only a 3-frame cushion in the output queue (1.34 s -> 0.46 s, no added stutter)
 export SCOPE_OUTPUT_TARGET_FRAMES="${SCOPE_OUTPUT_TARGET_FRAMES:-3}"

@@ -95,6 +95,23 @@ that stops head-turn overshoot (adherence 0.32 → 0.47); invented motion stays 
 page has a **Refresh character** button. The reference dropdown has **(none - prompt only)**: same speed (the ref is encoded once into the cache at reset, not per chunk), the prompt alone sets the look, and in a quick test head turns followed the input more closely. A **Noise pattern** dropdown (fixed by default; random / auto, or `NOISE_MODE=`) overrides
 the preset's fixed-noise choice live.
 
+## Root cause of the sparkles: noise-level offset (fixed)
+
+In video mode Scope mixes the camera latents with noise at the slider level `s`, but tells the model the first
+step is `1000·s − 100`, i.e. less noise than is really there. The model removes only what it was told about;
+the rest stays as residual noise. It shows up as colored sparkles, 8×8-pixel blocks (one latent cell each)
+morphing on their own, and a pulse once per chunk when the noise is re-drawn. `SCOPE_NOISE_T_OFFSET=0` (default
+in `start_scope.sh`) tells the true level. Scored on the webcam clip (StreamDiffusionV2):
+
+| Preset | Noise | Offset 100 (stock): realism / flicker / adhere | Offset 0: realism / flicker / adhere |
+|---|---|---|---|
+| 30 (1 step) | random | 0.50 / 0.0053 / 0.26 | **0.75 / 0.0035 / 0.41** |
+| 30 (1 step) | fixed | 0.39 / 0.0016 / 0.36 | **0.74** / 0.0022 / **0.40** |
+| 20 (depth, 2 steps) | random | 0.72 / 0.0060 / 0.48 | **0.78 / 0.0045** / 0.49 |
+| 20 (depth, 2 steps) | fixed | 0.69 / 0.0040 / 0.49 | **0.71 / 0.0037** / 0.47 |
+
+Same FPS. The 1-step "fixed noise leaves a haze" finding above was this offset, not fixed noise.
+
 ## Experimental: LongLive (`MODEL=longlive`)
 
 `MODEL=longlive ./start_scope.sh --bridge` swaps in NVIDIA's LongLive (Scope ships the pipeline; weights in
@@ -105,8 +122,8 @@ memory (12 latent frames, 3 per chunk). Same presets and controls page; depth pr
   in 16 GB; torchao fp8 fails on it). ~21 FPS on the 24 preset, 12.9 GB VRAM. lighttae VAE (it expects
   normalized latents); fused KV is turned off (its model can't take the fused prefix).
 - Defaults to **random noise** (fixed noise piles up into confetti) and noise 0.9 (at 0.75 it barely changes the camera).
-- **Status:** the character appears, but bright sparkle dots cover the frame and grow over time. Not caused by
-  fp8, the VAE, the step schedule or portrait orientation (all tested); unresolved.
+- **Status:** clean with the noise-offset fix above (the sparkles were that offset). Fixed noise still piles up
+  into artifacts on LongLive, so it stays on random noise.
 
 ## Latency (camera frame in → character frame out, measured)
 

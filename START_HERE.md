@@ -52,7 +52,7 @@ fuser -k -TERM 8000/tcp
 | `PRESET=24` | Starting FPS preset (30, 24, 20 or 15) |
 | `NOISE_MODE=random` | Starting noise pattern (fixed, random or auto) |
 | `CAMERA=/dev/video0` | Which webcam |
-| `MODEL=longlive` | Experimental LongLive model (sparkle artifacts, see README_QUICKSTART.md) |
+| `MODEL=longlive` | Experimental LongLive model (random noise only; see README_QUICKSTART.md) |
 | `SCOPE_FUSED_KV=0` | Turns off one speed patch (what you've been running with; a bit slower, same look) |
 | `NO_AUDIO=1` | Skip creating the delayed virtual mic |
 
