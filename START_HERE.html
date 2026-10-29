@@ -41,6 +41,8 @@
   }
   .step h2 { margin: 6px 0 8px; font-size: 1.25rem; }
   .step p { margin: 8px 0; }
+  .step h3 { margin: 14px 0 6px; font-size: 1.05rem; }
+  .step h3.optb { margin-top: 26px; padding-top: 18px; border-top: 1px dashed var(--line); }
   .tag {
     display: inline-block; font-size: .75rem; font-weight: 600; letter-spacing: .03em;
     text-transform: uppercase; color: var(--accent); background: var(--accent-soft);
@@ -100,13 +102,21 @@
   <section class="step">
     <div class="num">1</div>
     <div>
-      <h2>Terminal 1: start the AI character <span class="tag">my settings</span></h2>
+      <h2>Terminal 1: start the AI character</h2>
+      <h3>Option A: StreamDiffusionV2 <span class="tag">my settings</span></h3>
       <p>Preset <b>20</b> (tracks your pose with depth, ~16 FPS), <b>fixed</b> noise, <b>no reference image</b>, plus this prompt:</p>
       <div class="code"><button class="copy">Copy</button>cd ~/personal/ai-character-scope
 SCOPE_FUSED_KV=0 PRESET=20 PROMPT="swedish lady with blonde hair, black thin frame glasses" NO_AUDIO=1 ./start_scope.sh --bridge</div>
       <p>Wait for <code>[bridge] output ... fps</code> lines. It runs slowly for the first ~30 s while it warms up.</p>
       <p class="note">Fixed noise is already the default. Leaving out <code>CHARACTER_REF</code> means no reference image, and depth still works.
         To use a reference image, put <code>CHARACTER_REF=assets/blonde-gamer-girl.png</code> before <code>./start_scope.sh</code>.</p>
+
+      <h3 class="optb">Option B: LongLive <span class="tag">experimental</span></h3>
+      <p>NVIDIA's LongLive model. It looked more stable and realistic in your test, with about <b>1.4 s</b> of latency. Pick A or B, not both.</p>
+      <div class="code"><button class="copy">Copy</button>cd ~/personal/ai-character-scope
+MODEL=longlive PROMPT="swedish lady with blonde hair, black thin frame glasses" NO_AUDIO=1 ./start_scope.sh --bridge</div>
+      <p class="note">LongLive always uses <b>random</b> noise, because fixed noise builds up artifacts. Depth tracking is off, so presets 20 and 15 run without depth.
+        <code>SCOPE_FUSED_KV=0</code> isn't needed here, because LongLive turns that patch off by itself. Steps 2&ndash;4 below work the same way.</p>
     </div>
   </section>
 
