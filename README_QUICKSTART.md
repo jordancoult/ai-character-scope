@@ -39,6 +39,8 @@ Still to do: real webcam + OBS test · cone-shaped head · optional GPU clock lo
 
 ## TL;DR
 
+Just want to start it? See [START_HERE.md](START_HERE.md).
+
 ```bash
 cd ~/personal/ai-character-scope
 
