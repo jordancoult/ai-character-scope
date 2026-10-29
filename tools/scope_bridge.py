@@ -80,7 +80,8 @@ if args.noise_mode is None:
 H, W = args.size
 OH, OW = args.out_size
 state = {"preset": args.preset, "fps": 0.0, "upscale": None, "noise": args.noise_scale,
-         "noise_mode": args.noise_mode, "gpu_temp": None, "gpu_watts": None, "cpu_temp": None,
+         "noise_mode": args.noise_mode, "gpu_temp": None, "gpu_watts": None, "gpu_thermal_throttle": False,
+         "cpu_temp": None,
          "prompt": args.prompt, "ref": [str(Path(r).resolve()) for r in args.ref] if args.ref else []}
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 probe = {"in_edges": [], "in_prev": 0.0, "out_prev": None, "out_base": None, "lat": [], "recv_t": []}
@@ -115,20 +116,24 @@ async def poll_temps() -> None:
     while True:
         try:
             proc = await asyncio.create_subprocess_exec(
-                "nvidia-smi", "--query-gpu=temperature.gpu,power.draw", "--format=csv,noheader,nounits",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                "nvidia-smi", "--query-gpu=temperature.gpu,power.draw,clocks_throttle_reasons.active",
+                "--format=csv,noheader,nounits", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             out, _ = await proc.communicate()
-            t, w = out.decode().split("\n")[0].split(",")
+            t, w, reasons = out.decode().split("\n")[0].split(",")
             state["gpu_temp"], state["gpu_watts"] = int(t), float(w)
+            # 0x20 SW thermal slowdown, 0x40 HW thermal slowdown, 0x08 HW slowdown
+            state["gpu_thermal_throttle"] = bool(int(reasons, 16) & 0x68)
         except Exception:
             state["gpu_temp"] = state["gpu_watts"] = None
-        temps = []
-        for z in Path("/sys/class/thermal").glob("thermal_zone*/temp"):
+            state["gpu_thermal_throttle"] = False
+        # CPU package (Intel coretemp, TjMax 105 C on the Ultra 9 285H)
+        state["cpu_temp"] = None
+        for h in Path("/sys/class/hwmon").glob("hwmon*"):
             try:
-                temps.append(int(z.read_text()) // 1000)
+                if (h / "name").read_text().strip() == "coretemp":
+                    state["cpu_temp"] = int((h / "temp1_input").read_text()) // 1000
             except (OSError, ValueError):
                 pass
-        state["cpu_temp"] = max(temps) if temps else None
         await asyncio.sleep(2)
 
 
@@ -236,13 +241,18 @@ CONTROL_PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="v
 body{background:var(--bg);color:var(--fg);font:16px system-ui,sans-serif;margin:0;padding:24px 16px;max-width:560px}
 h1{font-size:20px;margin:0 0 16px} h2{font-size:15px;margin:22px 0 6px;color:var(--muted);font-weight:500}
 input[type=range]{width:100%;accent-color:var(--accent)} .ticks{display:flex;justify-content:space-between;color:var(--muted);font-size:13px}
-.big{font-size:40px;font-weight:600;margin:12px 0 2px} .stats{display:flex;gap:28px;align-items:baseline;flex-wrap:wrap}
-.temp{font-size:22px;font-weight:600} .temp small{font-size:13px;color:var(--muted);font-weight:400} .warm{color:#f0a83c} .hot{color:#ff5c5c} .muted{color:var(--muted);font-size:14px}
+.big{font-size:40px;font-weight:600;margin:12px 0 2px}
+.gauges{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:10px 0 4px} .g b{font-size:20px} .g small{color:var(--muted);font-size:13px}
+.bar{position:relative;height:10px;border-radius:5px;margin:6px 0 3px;display:flex;overflow:visible}
+.bar i{display:block;height:100%} .bar i:first-child{border-radius:5px 0 0 5px} .bar i:last-child{border-radius:0 5px 5px 0}
+.mk{position:absolute;top:-4px;width:4px;height:18px;margin-left:-2px;background:var(--fg);border-radius:2px;box-shadow:0 0 0 2px var(--bg)}
+.z0{color:#3fbf6f} .z1{color:#f0c03c} .z2{color:#ff4d4d} .muted{color:var(--muted);font-size:14px}
 textarea,select{width:100%;box-sizing:border-box;background:var(--field);color:var(--fg);border:1px solid #333;border-radius:6px;padding:8px;font:14px system-ui}
 button{margin-top:8px;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 14px;font:600 14px system-ui;cursor:pointer}
 </style></head><body><h1>AI character - live controls</h1>
-<div class="stats"><div class="big"><span id="fps">-</span> fps</div>
-<div class="temp"><small>GPU</small> <span id="gt">-</span> <small id="gw"></small></div><div class="temp"><small>CPU</small> <span id="ct">-</span></div></div><div class="muted" id="label"></div>
+<div class="big"><span id="fps">-</span> fps</div>
+<div class="gauges"><div class="g" id="gg"></div><div class="g" id="cg"></div></div>
+<div class="muted">Temperature zones: <span class="z0">efficient</span> &middot; <span class="z1">throttling (slows itself down, safe)</span> &middot; <span class="z2">damaging (avoid)</span></div><div class="muted" id="label"></div>
 <h2>Quality vs FPS</h2>
 <input id="s" type="range" min="0" max="3" step="1"><div class="ticks"><span>15</span><span>20</span><span>24</span><span>30</span></div>
 <h2>Noise: <span id="nv"></span> &nbsp;<span class="muted">lower = follows you more, higher = more character</span></h2>
@@ -252,14 +262,24 @@ button{margin-top:8px;background:var(--accent);color:#fff;border:0;border-radius
 <button id="rb">Refresh character (reset cache)</button>
 <h2>Prompt</h2><textarea id="p" rows="4"></textarea><button id="pb">Apply prompt</button>
 <script>
-const temp=(id,v,warm,hot)=>{const e=document.getElementById(id); e.textContent=v==null?'-':v+'\u00b0C'; e.className=v>=hot?'hot':v>=warm?'warm':'';};
+// Zone edges from this laptop: GPU target/slowdown 87/89 C, shutdown 92 C (nvidia-smi -q -d TEMPERATURE);
+// CPU TjMax 105 C (throttles from ~100), critical trip 110 C (thermal zone TCPU).
+const ZC=['#3fbf6f','#f0c03c','#ff4d4d'], ZN=['efficient','throttling','damaging'];
+const GZ={lo:40,hi:100,e:[87,92]}, CZ={lo:40,hi:115,e:[100,110]};
+function gauge(id,name,v,z,extra,forceThrottle){const el=document.getElementById(id);
+ if(v==null){el.innerHTML=`<small>${name}</small> <b>-</b>`;return;}
+ let k=z.e.filter(e=>v>=e).length; if(forceThrottle&&k<1)k=1;
+ const pts=[z.lo,...z.e,z.hi], pct=x=>100*(Math.min(Math.max(x,z.lo),z.hi)-z.lo)/(z.hi-z.lo);
+ const segs=ZC.map((c,i)=>`<i style="width:${pct(pts[i+1])-pct(pts[i])}%;background:${c};opacity:${i==k?1:.35}"></i>`).join('');
+ el.innerHTML=`<small>${name}</small> <b class="z${k}">${v}\u00b0C</b> <small class="z${k}">${ZN[k]}</small> <small>${extra}</small>
+ <div class="bar">${segs}<span class="mk" style="left:${pct(v)}%"></span></div>`;}
 const steps=[15,20,24,30], s=document.getElementById('s'), n=document.getElementById('n'), ref=document.getElementById('ref'), p=document.getElementById('p'), nm=document.getElementById('nm');
 let loaded=false;
 const post=(url,body)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
 async function poll(){try{const r=await (await fetch('/state')).json();
  document.getElementById('fps').textContent=r.fps.toFixed(1);
- temp('gt',r.gpu_temp,80,87); temp('ct',r.cpu_temp,90,98);
- document.getElementById('gw').textContent=r.gpu_watts==null?'':Math.round(r.gpu_watts)+' W';
+ gauge('gg','GPU',r.gpu_temp,GZ,r.gpu_watts==null?'':Math.round(r.gpu_watts)+' W',r.gpu_thermal_throttle);
+ gauge('cg','CPU',r.cpu_temp,CZ,'');
  document.getElementById('label').textContent=r.label+' | noise: '+(r.fixed_noise?'fixed':'random')+' | upscale: '+r.upscale;
  document.getElementById('nv').textContent=r.noise.toFixed(2);
  if(document.activeElement!==s) s.value=steps.indexOf(r.preset);
@@ -375,6 +395,7 @@ async def main() -> None:
             app.router.add_get("/state", lambda _: web.json_response(
                 {"preset": state["preset"], "fps": state["fps"], "upscale": state["upscale"],
                  "gpu_temp": state["gpu_temp"], "gpu_watts": state["gpu_watts"], "cpu_temp": state["cpu_temp"],
+                 "gpu_thermal_throttle": state["gpu_thermal_throttle"],
                  "label": ("[LongLive] " if args.pipeline == "longlive" else "") + PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
                  "fixed_noise": fixed_noise(state["preset"]), "prompt": state["prompt"],
                  "ref": [Path(r).name for r in state["ref"]],
