@@ -82,9 +82,55 @@ OH, OW = args.out_size
 state = {"preset": args.preset, "fps": 0.0, "upscale": None, "noise": args.noise_scale,
          "noise_mode": args.noise_mode, "gpu_temp": None, "gpu_watts": None, "gpu_thermal_throttle": False,
          "cpu_temp": None,
+         # Advanced overrides (None = use the preset): depth on/off, number of denoising steps,
+         # the image fed in place of the camera right after a reset (seeds the KV-cache sink).
+         "depth": None, "steps": None, "start": None, "vace_scale": args.vace_scale,
+         # Attention steering: weight per KV-cache region (1 = stock); attn_on=False sends all 1s
+         "attn": {"sink": 1.0, "recent": 1.0, "current": 1.0}, "attn_on": True,
          "prompt": args.prompt, "ref": [str(Path(r).resolve()) for r in args.ref] if args.ref else []}
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
+SAVED = Path(__file__).resolve().parents[1] / "saved_settings"
 probe = {"in_edges": [], "in_prev": 0.0, "out_prev": None, "out_base": None, "lat": [], "recv_t": []}
+
+
+# Denoising timesteps for 1-5 steps (Scope replaces the first with the noise level)
+STEP_LISTS = {1: [750], 2: [750, 400], 3: [750, 500, 250], 4: [750, 600, 400, 200], 5: [750, 600, 450, 300, 150]}
+# Frames of the start image sent after a reset: covers the sink chunks (3 latent frames = 12 video
+# frames on both pipelines) plus camera frames already queued when the reset lands.
+START_HOLD_FRAMES = 24
+inject = {"img": None, "left": 0}
+
+
+def load_start_image(name: str):
+    """Center-crop + resize an assets/ image to the generation size, as an RGB uint8 array."""
+    from PIL import Image
+
+    img = Image.open(ASSETS / Path(name).name).convert("RGB")
+    target = W / H
+    iw, ih = img.size
+    if iw / ih > target:
+        cw = round(ih * target)
+        img = img.crop(((iw - cw) // 2, 0, (iw - cw) // 2 + cw, ih))
+    else:
+        ch = round(iw / target)
+        img = img.crop((0, (ih - ch) // 2, iw, (ih - ch) // 2 + ch))
+    import numpy as np
+
+    return np.asarray(img.resize((W, H), Image.LANCZOS))
+
+
+def effective_depth(preset: int) -> bool:
+    if args.pipeline != "streamdiffusionv2":
+        return False
+    return PRESETS[preset]["depth_vace"] if state["depth"] is None else state["depth"]
+
+
+def effective_steps(preset: int) -> list[int]:
+    return STEP_LISTS[state["steps"]] if state["steps"] else (args.steps or PRESETS[preset]["steps"])
+
+
+def attention_weights() -> dict:
+    return dict(state["attn"]) if state["attn_on"] else {"sink": 1.0, "recent": 1.0, "current": 1.0}
 
 
 def fixed_noise(preset: int) -> bool:
@@ -93,21 +139,21 @@ def fixed_noise(preset: int) -> bool:
 
 
 def preset_params(preset: int, with_ref: bool) -> dict:
-    p = PRESETS[preset]
     params = {
-        "denoising_step_list": args.steps or p["steps"],
+        "denoising_step_list": effective_steps(preset),
         # Scope maps noise_scale to the first timestep (1000 * noise - 100)
         "noise_scale": state["noise"],
         "noise_controller": False,
         "fixed_noise": fixed_noise(preset),
         # depth works without a ref image (VACE is always loaded)
-        "depth_vace": p["depth_vace"] and args.pipeline == "streamdiffusionv2",
+        "depth_vace": effective_depth(preset),
+        "vace_context_scale": state["vace_scale"],
+        "attention_weights": attention_weights(),
         "vace_use_input_video": False,
         "reset_cache": True,
     }
     if with_ref and state["ref"]:
         params["vace_ref_images"] = state["ref"]
-        params["vace_context_scale"] = args.vace_scale
     return params
 
 
@@ -201,6 +247,9 @@ class CropResizeTrack(MediaStreamTrack):
         else:
             new = frame
         new = new.reformat(width=self.width, height=self.height, format="yuv420p")
+        if inject["left"] > 0 and inject["img"] is not None:
+            inject["left"] -= 1
+            new = VideoFrame.from_ndarray(inject["img"], format="rgb24").reformat(format="yuv420p")
         new.pts, new.time_base = frame.pts, frame.time_base
         if args.latency_probe:
             luma = float(new.to_ndarray(format="gray")[::8, ::8].mean())
@@ -249,6 +298,8 @@ input[type=range]{width:100%;accent-color:var(--accent)} .ticks{display:flex;jus
 .bar i{display:block;height:100%} .bar i:first-child{border-radius:5px 0 0 5px} .bar i:last-child{border-radius:0 5px 5px 0}
 .mk{position:absolute;top:-4px;width:4px;height:18px;margin-left:-2px;background:var(--fg);border-radius:2px;box-shadow:0 0 0 2px var(--bg)}
 .z0{color:#3fbf6f} .z1{color:#f0c03c} .z2{color:#ff4d4d} .muted{color:var(--muted);font-size:14px}
+.att{margin-top:10px} .att span{font-size:14px} .att b{color:var(--accent)}
+details{margin-top:18px;border:1px solid #333;border-radius:8px;padding:4px 14px 14px} summary{cursor:pointer;font-weight:600;padding:8px 0;color:var(--muted)}
 textarea,select{width:100%;box-sizing:border-box;background:var(--field);color:var(--fg);border:1px solid #333;border-radius:6px;padding:8px;font:14px system-ui}
 button{margin-top:8px;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 14px;font:600 14px system-ui;cursor:pointer}
 </style></head><body><h1>AI character - live controls</h1>
@@ -262,6 +313,22 @@ button{margin-top:8px;background:var(--accent);color:#fff;border:0;border-radius
 <h2>Noise pattern</h2><select id="nm"><option value="auto">auto (preset default)</option><option value="fixed">fixed (same every chunk: less shimmer)</option><option value="random">random (new every chunk)</option></select>
 <h2>Reference image</h2><select id="ref"></select>
 <button id="rb">Refresh character (reset cache)</button>
+<details id="adv"><summary>Advanced</summary>
+<h2>Depth input (pose tracking)</h2><select id="dp"><option value="">preset default</option><option value="on">on</option><option value="off">off</option></select>
+<h2>Diffusion steps <span class="muted">more = cleaner detail, slower</span></h2><select id="st"><option value="">preset default</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+<h2>Memory starts from <span class="muted">what the first frames after a reset (the sink) are made from</span></h2>
+<select id="sf"></select>
+<div class="muted">An image is shown to the model instead of the camera for ~0.8 s after each reset, then the camera takes over. The look it sets stays in memory until the next reset.</div>
+<h2>Conditioning strength: <span id="vv"></span> <span class="muted">how hard the reference image and depth steer</span></h2>
+<input id="vs" type="range" min="0" max="2" step="0.1">
+<h2>Attention <label class="muted"><input type="checkbox" id="ao"> steering on</label></h2>
+<div class="muted">How much each part of memory is looked at. 1.0 = normal, lower dampens, higher emphasises. Applies instantly, no reset.</div>
+<div class="att"><span>Sink (start memory) <b id="av_sink"></b></span><input id="a_sink" type="range" min="0.1" max="3" step="0.05"></div>
+<div class="att"><span>Recent frames <b id="av_recent"></b></span><input id="a_recent" type="range" min="0.1" max="3" step="0.05"></div>
+<div class="att"><span>Current frame (camera) <b id="av_current"></b></span><input id="a_current" type="range" min="0.1" max="3" step="0.05"></div>
+<button id="ar">Reset attention to 1.0</button>
+</details>
+<h2>Save settings</h2><div style="display:flex;gap:8px"><input id="svn" placeholder="name (optional)" style="flex:1;background:var(--field);color:var(--fg);border:1px solid #333;border-radius:6px;padding:8px;font:14px system-ui"><button id="sv" style="margin-top:0">Save</button></div><div class="muted" id="svm"></div>
 <h2>Prompt</h2><textarea id="p" rows="4"></textarea><button id="pb">Apply prompt</button> <span class="muted">Enter applies, Shift+Enter for a new line</span>
 <script>
 // Zone edges from this laptop: GPU target/slowdown 87/89 C, shutdown 92 C (nvidia-smi -q -d TEMPERATURE);
@@ -282,7 +349,16 @@ async function poll(){try{const r=await (await fetch('/state')).json();
  document.getElementById('fps').textContent=r.fps.toFixed(1);
  gauge('gg','GPU',r.gpu_temp,GZ,r.gpu_watts==null?'':Math.round(r.gpu_watts)+' W',r.gpu_thermal_throttle);
  gauge('cg','CPU',r.cpu_temp,CZ,'');
- document.getElementById('label').textContent=r.label+' | noise: '+(r.fixed_noise?'fixed':'random')+' | upscale: '+r.upscale;
+ document.getElementById('label').textContent=r.label+' | noise: '+(r.fixed_noise?'fixed':'random')+' | depth: '+(r.depth_on?'on':'off')+' | steps: '+r.n_steps+(r.start?' | starts from: '+r.start:'')+' | upscale: '+r.upscale;
+ const dp=document.getElementById('dp'), st=document.getElementById('st'), sf=document.getElementById('sf'), vs=document.getElementById('vs');
+ dp.disabled=!r.depth_available; if(!r.depth_available) dp.title='Depth is not available on LongLive';
+ if(document.activeElement!==dp) dp.value=r.depth===null?'':(r.depth?'on':'off');
+ if(document.activeElement!==st) st.value=r.steps||'';
+ if(document.activeElement!==vs) vs.value=r.vace_scale; document.getElementById('vv').textContent=r.vace_scale.toFixed(1);
+ if(!sf.options.length) sf.innerHTML='<option value="">camera (default)</option>'+r.refs.map(f=>`<option>${f}</option>`).join('');
+ if(document.activeElement!==sf) sf.value=r.start||'';
+ document.getElementById('ao').checked=r.attn_on;
+ for(const k of ['sink','recent','current']){const el=document.getElementById('a_'+k); if(document.activeElement!==el) el.value=r.attn[k]; document.getElementById('av_'+k).textContent=r.attn[k].toFixed(2);}
  document.getElementById('nv').textContent=r.noise.toFixed(2);
  if(document.activeElement!==s) s.value=steps.indexOf(r.preset);
  if(document.activeElement!==n) n.value=r.noise;
@@ -295,6 +371,17 @@ nm.onchange=()=>post('/params',{noise_mode:nm.value}).then(poll);
 ref.onchange=()=>post('/params',{ref:ref.value}).then(poll);
 document.getElementById('pb').onclick=()=>post('/params',{prompt:p.value}).then(poll);
 p.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.getElementById('pb').click();}};
+document.getElementById('dp').onchange=e=>post('/params',{depth:e.target.value}).then(poll);
+document.getElementById('st').onchange=e=>post('/params',{steps:e.target.value}).then(poll);
+document.getElementById('sf').onchange=e=>post('/params',{start:e.target.value}).then(poll);
+document.getElementById('vs').onchange=e=>post('/params',{vace_scale:parseFloat(e.target.value)}).then(poll);
+for(const k of ['sink','recent','current']){const el=document.getElementById('a_'+k);
+ el.oninput=()=>{document.getElementById('av_'+k).textContent=parseFloat(el.value).toFixed(2);};
+ el.onchange=()=>post('/params',{['attn_'+k]:parseFloat(el.value)}).then(poll);}
+document.getElementById('ao').onchange=e=>post('/params',{attn_on:e.target.checked}).then(poll);
+document.getElementById('ar').onclick=()=>post('/params',{attn_sink:1,attn_recent:1,attn_current:1}).then(poll);
+const svn=document.getElementById('svn'); svn.onkeydown=e=>{if(e.key==='Enter')document.getElementById('sv').click();};
+document.getElementById('sv').onclick=async()=>{const r=await (await post('/save',{name:svn.value})).json(); document.getElementById('svm').textContent=r.ok?'saved: '+r.path.split('/').slice(-2).join('/'):'save failed';};
 document.getElementById('rb').onclick=()=>post('/refresh').then(poll);
 setInterval(poll,1000); poll();
 </script></body></html>"""
@@ -326,11 +413,17 @@ async def main() -> None:
             state["upscale"] = name
             return upscalers[name]
 
+        def send(update: dict) -> None:
+            if channel.readyState != "open":
+                return
+            if update.get("reset_cache") and state["start"]:
+                inject["img"], inject["left"] = load_start_image(state["start"]), START_HOLD_FRAMES
+            channel.send(json.dumps(update))
+
         def apply_preset(preset: int) -> None:
             state["preset"] = preset
             current_upscaler()
-            if channel.readyState == "open":
-                channel.send(json.dumps(preset_params(preset, with_ref=True)))
+            send(preset_params(preset, with_ref=True))
             print(f"[bridge] preset -> {PRESETS[preset]['label']}", flush=True)
 
         @pc.on("track")
@@ -401,6 +494,11 @@ async def main() -> None:
                  "gpu_thermal_throttle": state["gpu_thermal_throttle"],
                  "label": ("[LongLive] " if args.pipeline == "longlive" else "") + PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
                  "fixed_noise": fixed_noise(state["preset"]), "prompt": state["prompt"],
+                 "depth": state["depth"], "depth_on": effective_depth(state["preset"]),
+                 "depth_available": args.pipeline == "streamdiffusionv2",
+                 "steps": state["steps"], "n_steps": len(effective_steps(state["preset"])),
+                 "start": state["start"], "vace_scale": state["vace_scale"],
+                 "attn": state["attn"], "attn_on": state["attn_on"],
                  "ref": [Path(r).name for r in state["ref"]],
                  "refs": sorted(f.name for f in ASSETS.glob("*.png"))}))
 
@@ -424,20 +522,65 @@ async def main() -> None:
                     if path.is_file():
                         state["ref"] = [str(path)]
                         update = preset_params(state["preset"], with_ref=True)  # re-send ref + reset cache
-                if update and channel.readyState == "open":
-                    channel.send(json.dumps(update))
+                if "depth" in body:
+                    state["depth"] = {"on": True, "off": False}.get(body["depth"])
+                    update = preset_params(state["preset"], with_ref=True)  # VACE inputs change: reset
+                if "steps" in body:
+                    n = int(body["steps"] or 0)
+                    state["steps"] = n if n in STEP_LISTS else None
+                    update["denoising_step_list"] = effective_steps(state["preset"])
+                if "vace_scale" in body:
+                    state["vace_scale"] = max(0.0, min(2.0, float(body["vace_scale"])))
+                    update["vace_context_scale"] = state["vace_scale"]
+                for key in ("sink", "recent", "current"):
+                    if f"attn_{key}" in body:
+                        state["attn"][key] = max(0.05, min(4.0, float(body[f"attn_{key}"])))
+                        update["attention_weights"] = attention_weights()
+                if "attn_on" in body:
+                    state["attn_on"] = bool(body["attn_on"])
+                    update["attention_weights"] = attention_weights()
+                if "start" in body:
+                    name = Path(body["start"] or "").name
+                    state["start"] = name if name and (ASSETS / name).is_file() else None
+                    update = preset_params(state["preset"], with_ref=True)  # re-seed the sink now
+                if update:
+                    send(update)
                 print(f"[bridge] params -> {body}", flush=True)
                 return web.json_response({"ok": True})
 
             app.router.add_post("/params", set_params)
 
             async def refresh(request):
-                if channel.readyState == "open":
-                    channel.send(json.dumps(preset_params(state["preset"], with_ref=True)))  # reset + ref
+                send(preset_params(state["preset"], with_ref=True))  # reset + ref (+ start image)
                 print("[bridge] cache refresh", flush=True)
                 return web.json_response({"ok": True})
 
             app.router.add_post("/refresh", refresh)
+
+            async def save(request):
+                body = await request.json() if request.can_read_body else {}
+                name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in str(body.get("name", ""))).strip()
+                pre = state["preset"]
+                settings = {
+                    "name": name, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "model": args.pipeline, "vae": args.vae, "preset": pre, "preset_label": PRESETS[pre]["label"],
+                    "prompt": state["prompt"], "reference_image": [Path(r).name for r in state["ref"]],
+                    "noise": state["noise"], "noise_mode": state["noise_mode"], "fixed_noise": fixed_noise(pre),
+                    "depth": state["depth"], "depth_effective": effective_depth(pre),
+                    "steps": state["steps"], "denoising_step_list": effective_steps(pre),
+                    "start_image": state["start"], "conditioning_strength": state["vace_scale"],
+                    "attention_steering_on": state["attn_on"], "attention_weights": state["attn"],
+                    "upscale": state["upscale"], "size": [H, W], "out_size": [OH, OW],
+                    "last_fps": round(state["fps"], 1),
+                }
+                SAVED.mkdir(exist_ok=True)
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                path = SAVED / (f"{name.replace(' ', '_')}-{stamp}.json" if name else f"settings-{stamp}.json")
+                path.write_text(json.dumps(settings, indent=2) + "\n")
+                print(f"[bridge] settings saved -> {path}", flush=True)
+                return web.json_response({"ok": True, "path": str(path)})
+
+            app.router.add_post("/save", save)
 
             async def set_preset(request):
                 apply_preset(int(request.match_info["fps"]))
