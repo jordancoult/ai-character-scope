@@ -80,7 +80,7 @@ if args.noise_mode is None:
 H, W = args.size
 OH, OW = args.out_size
 state = {"preset": args.preset, "fps": 0.0, "upscale": None, "noise": args.noise_scale,
-         "noise_mode": args.noise_mode,
+         "noise_mode": args.noise_mode, "gpu_temp": None, "gpu_watts": None, "cpu_temp": None,
          "prompt": args.prompt, "ref": [str(Path(r).resolve()) for r in args.ref] if args.ref else []}
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 probe = {"in_edges": [], "in_prev": 0.0, "out_prev": None, "out_base": None, "lat": [], "recv_t": []}
@@ -108,6 +108,28 @@ def preset_params(preset: int, with_ref: bool) -> dict:
         params["vace_ref_images"] = state["ref"]
         params["vace_context_scale"] = args.vace_scale
     return params
+
+
+async def poll_temps() -> None:
+    """GPU/CPU temperatures for the control page (same sources as tools/thermal_watchdog.sh)."""
+    while True:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "nvidia-smi", "--query-gpu=temperature.gpu,power.draw", "--format=csv,noheader,nounits",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await proc.communicate()
+            t, w = out.decode().split("\n")[0].split(",")
+            state["gpu_temp"], state["gpu_watts"] = int(t), float(w)
+        except Exception:
+            state["gpu_temp"] = state["gpu_watts"] = None
+        temps = []
+        for z in Path("/sys/class/thermal").glob("thermal_zone*/temp"):
+            try:
+                temps.append(int(z.read_text()) // 1000)
+            except (OSError, ValueError):
+                pass
+        state["cpu_temp"] = max(temps) if temps else None
+        await asyncio.sleep(2)
 
 
 async def load_pipeline(client: httpx.AsyncClient) -> None:
@@ -214,11 +236,13 @@ CONTROL_PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="v
 body{background:var(--bg);color:var(--fg);font:16px system-ui,sans-serif;margin:0;padding:24px 16px;max-width:560px}
 h1{font-size:20px;margin:0 0 16px} h2{font-size:15px;margin:22px 0 6px;color:var(--muted);font-weight:500}
 input[type=range]{width:100%;accent-color:var(--accent)} .ticks{display:flex;justify-content:space-between;color:var(--muted);font-size:13px}
-.big{font-size:40px;font-weight:600;margin:12px 0 2px} .muted{color:var(--muted);font-size:14px}
+.big{font-size:40px;font-weight:600;margin:12px 0 2px} .stats{display:flex;gap:28px;align-items:baseline;flex-wrap:wrap}
+.temp{font-size:22px;font-weight:600} .temp small{font-size:13px;color:var(--muted);font-weight:400} .warm{color:#f0a83c} .hot{color:#ff5c5c} .muted{color:var(--muted);font-size:14px}
 textarea,select{width:100%;box-sizing:border-box;background:var(--field);color:var(--fg);border:1px solid #333;border-radius:6px;padding:8px;font:14px system-ui}
 button{margin-top:8px;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 14px;font:600 14px system-ui;cursor:pointer}
 </style></head><body><h1>AI character - live controls</h1>
-<div class="big"><span id="fps">-</span> fps</div><div class="muted" id="label"></div>
+<div class="stats"><div class="big"><span id="fps">-</span> fps</div>
+<div class="temp"><small>GPU</small> <span id="gt">-</span> <small id="gw"></small></div><div class="temp"><small>CPU</small> <span id="ct">-</span></div></div><div class="muted" id="label"></div>
 <h2>Quality vs FPS</h2>
 <input id="s" type="range" min="0" max="3" step="1"><div class="ticks"><span>15</span><span>20</span><span>24</span><span>30</span></div>
 <h2>Noise: <span id="nv"></span> &nbsp;<span class="muted">lower = follows you more, higher = more character</span></h2>
@@ -228,11 +252,14 @@ button{margin-top:8px;background:var(--accent);color:#fff;border:0;border-radius
 <button id="rb">Refresh character (reset cache)</button>
 <h2>Prompt</h2><textarea id="p" rows="4"></textarea><button id="pb">Apply prompt</button>
 <script>
+const temp=(id,v,warm,hot)=>{const e=document.getElementById(id); e.textContent=v==null?'-':v+'\u00b0C'; e.className=v>=hot?'hot':v>=warm?'warm':'';};
 const steps=[15,20,24,30], s=document.getElementById('s'), n=document.getElementById('n'), ref=document.getElementById('ref'), p=document.getElementById('p'), nm=document.getElementById('nm');
 let loaded=false;
 const post=(url,body)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
 async function poll(){try{const r=await (await fetch('/state')).json();
  document.getElementById('fps').textContent=r.fps.toFixed(1);
+ temp('gt',r.gpu_temp,80,87); temp('ct',r.cpu_temp,90,98);
+ document.getElementById('gw').textContent=r.gpu_watts==null?'':Math.round(r.gpu_watts)+' W';
  document.getElementById('label').textContent=r.label+' | noise: '+(r.fixed_noise?'fixed':'random')+' | upscale: '+r.upscale;
  document.getElementById('nv').textContent=r.noise.toFixed(2);
  if(document.activeElement!==s) s.value=steps.indexOf(r.preset);
@@ -342,10 +369,12 @@ async def main() -> None:
 
         runner = None
         if args.control_port:
+            asyncio.ensure_future(poll_temps())
             app = web.Application()
             app.router.add_get("/", lambda _: web.Response(text=CONTROL_PAGE, content_type="text/html"))
             app.router.add_get("/state", lambda _: web.json_response(
                 {"preset": state["preset"], "fps": state["fps"], "upscale": state["upscale"],
+                 "gpu_temp": state["gpu_temp"], "gpu_watts": state["gpu_watts"], "cpu_temp": state["cpu_temp"],
                  "label": ("[LongLive] " if args.pipeline == "longlive" else "") + PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
                  "fixed_noise": fixed_noise(state["preset"]), "prompt": state["prompt"],
                  "ref": [Path(r).name for r in state["ref"]],
