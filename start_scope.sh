@@ -13,6 +13,7 @@
 #   CAMERA=/dev/video0  CAMERA_SIZE=1280x720
 #   AUDIO_DELAY_MS=350                    delay applied to the AI_Character_Mic virtual mic
 #   NO_AUDIO=1                            skip creating the virtual mic
+#   BRIDGE_ARGS="--size 640 352 --seed 7"  extra scope_bridge.py arguments (generation size, VAE, seed)
 set -u
 W="$HOME/personal/ai-character-scope"
 source "$W/env.sh"
@@ -118,7 +119,7 @@ if [ "$BRIDGE" = 1 ]; then
     --output /dev/video10 --preset "${PRESET:-30}" ${NOISE_MODE:+--noise-mode "$NOISE_MODE"} \
     --pipeline "${MODEL:-streamdiffusionv2}" \
     --prompt "${PROMPT:-a stylized 3D animated character, Pixar style render}" \
-    "${REF_ARGS[@]}" &
+    "${REF_ARGS[@]}" ${BRIDGE_ARGS:-} &
   PIDS+=($!)
   echo "[scope] bridge: ${CAMERA:-/dev/video0} -> Scope (576x320) -> /dev/video10 (AI_Scope_Cam, 720x1280)"
   echo "[scope] live controls (FPS, noise, reference, prompt): http://127.0.0.1:8090   (first ~30 s after start are slow while torch.compile warms up)"

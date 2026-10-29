@@ -42,6 +42,7 @@ class Upscaler:
 
     def __init__(self, method="bicubic", size=(1280, 720), device="cuda"):
         self.method, self.size = method, size
+        self.sharpen = 0.6  # bicubic-sharp unsharp-mask amount
         self.net = None
         if method in COMPACT_MODELS:
             file, num_conv = COMPACT_MODELS[method]
@@ -63,5 +64,5 @@ class Upscaler:
         if self.method == "bicubic-sharp":
             # unsharp mask: y + amount * (y - blur(y)); ~0.3 ms/frame on GPU
             blur = F.avg_pool2d(F.pad(y, (2, 2, 2, 2), mode="replicate"), 5, stride=1)
-            y = y + 0.6 * (y - blur)
+            y = y + self.sharpen * (y - blur)
         return y.clamp(0, 1)
