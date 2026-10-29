@@ -126,14 +126,16 @@ async def poll_temps() -> None:
         except Exception:
             state["gpu_temp"] = state["gpu_watts"] = None
             state["gpu_thermal_throttle"] = False
-        # CPU package (Intel coretemp, TjMax 105 C on the Ultra 9 285H)
-        state["cpu_temp"] = None
+        # Hottest CPU core (Intel coretemp, TjMax 105 C on the Ultra 9 285H). The package sensor
+        # updates ~1/s and jumps 92 <-> 105 while single cores sit at their limit.
+        temps = []
         for h in Path("/sys/class/hwmon").glob("hwmon*"):
             try:
                 if (h / "name").read_text().strip() == "coretemp":
-                    state["cpu_temp"] = int((h / "temp1_input").read_text()) // 1000
+                    temps += [int(f.read_text()) // 1000 for f in h.glob("temp*_input")]
             except (OSError, ValueError):
                 pass
+        state["cpu_temp"] = max(temps) if temps else None
         await asyncio.sleep(2)
 
 
