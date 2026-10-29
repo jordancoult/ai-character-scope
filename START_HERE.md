@@ -1,5 +1,7 @@
 # Start here
 
+Easier-to-read version: open `START_HERE.html` in a browser.
+
 Two terminals: one runs the AI, one shows you the result. Keep the laptop plugged in, on the ASUS **Performance** profile.
 
 ## Terminal 1: start the AI character
@@ -53,7 +55,7 @@ fuser -k -TERM 8000/tcp
 | `NOISE_MODE=random` | Starting noise pattern (fixed, random or auto) |
 | `CAMERA=/dev/video0` | Which webcam |
 | `MODEL=longlive` | Experimental LongLive model (random noise only; see README_QUICKSTART.md) |
-| `SCOPE_FUSED_KV=0` | Turns off one speed patch (what you've been running with; a bit slower, same look) |
+| `SCOPE_FUSED_KV=0` | Turns off one speed patch (what you've been running with): ~9% slower but slightly more realistic; on gives a bit less flicker/invented motion |
 | `NO_AUDIO=1` | Skip creating the delayed virtual mic |
 
 Reference images go in `assets/`. Match their framing to how you sit in front of the camera.
