@@ -4,10 +4,15 @@ Two terminals: one runs the AI, one shows you the result. Keep the laptop plugge
 
 ## Terminal 1: start the AI character
 
+**My settings (what looks best so far):** preset **20** (pose-tracked with depth, ~16 FPS), **fixed** noise, **no reference image**, this prompt:
+
 ```bash
 cd ~/personal/ai-character-scope
-SCOPE_FUSED_KV=0 CHARACTER_REF=assets/blonde-gamer-girl.png PROMPT="swedish lady with blonde hair, black thin frame glasses" NO_AUDIO=1 ./start_scope.sh --bridge
+SCOPE_FUSED_KV=0 PRESET=20 PROMPT="swedish lady with blonde hair, black thin frame glasses" NO_AUDIO=1 ./start_scope.sh --bridge
 ```
+
+Fixed noise is the default, and leaving out `CHARACTER_REF` means no reference image (depth still works).
+To use a reference image instead, add `CHARACTER_REF=assets/blonde-gamer-girl.png` before `./start_scope.sh`.
 
 Wait for `[bridge] output ... fps` lines. The first ~30 s are slow while it warms up.
 

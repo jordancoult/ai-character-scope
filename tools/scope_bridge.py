@@ -99,8 +99,8 @@ def preset_params(preset: int, with_ref: bool) -> dict:
         "noise_scale": state["noise"],
         "noise_controller": False,
         "fixed_noise": fixed_noise(preset),
-        # depth works without a ref image, but needs VACE (loaded only when started with --ref)
-        "depth_vace": p["depth_vace"] and bool(args.ref) and args.pipeline == "streamdiffusionv2",
+        # depth works without a ref image (VACE is always loaded)
+        "depth_vace": p["depth_vace"] and args.pipeline == "streamdiffusionv2",
         "vace_use_input_video": False,
         "reset_cache": True,
     }
@@ -113,7 +113,7 @@ def preset_params(preset: int, with_ref: bool) -> dict:
 async def load_pipeline(client: httpx.AsyncClient) -> None:
     # LongLive expects normalized latents: lighttae (tae is raw, only right for our StreamDiffusionV2 patch)
     vae = args.vae or ("lighttae" if args.pipeline == "longlive" else "tae")
-    load_params = {"height": H, "width": W, "vae_type": vae, "vace_enabled": bool(args.ref)}
+    load_params = {"height": H, "width": W, "vae_type": vae, "vace_enabled": True}  # always: depth presets need VACE even without a ref
     r = await client.post("/api/v1/pipeline/load",
                           json={"pipeline_ids": [args.pipeline], "load_params": load_params})
     r.raise_for_status()
@@ -330,7 +330,7 @@ async def main() -> None:
         await pc.setLocalDescription(await pc.createOffer())
         params = {"pipeline_ids": [args.pipeline], "input_mode": "video",
                   "prompts": [{"text": state["prompt"], "weight": 1.0}], "manage_cache": True,
-                  "vace_enabled": bool(args.ref), **preset_params(state["preset"], with_ref=True)}
+                  "vace_enabled": True, **preset_params(state["preset"], with_ref=True)}
         params.pop("reset_cache")
         r = await client.post("/api/v1/webrtc/offer", json={
             "sdp": pc.localDescription.sdp, "type": pc.localDescription.type, "initialParameters": params})
