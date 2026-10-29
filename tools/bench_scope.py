@@ -32,6 +32,7 @@ parser.add_argument("--max-seconds", type=float, default=None, help="Single pass
 parser.add_argument("--video", default=str(ASSET))
 parser.add_argument("--out", default=None, help="Optional mp4 path for the output")
 parser.add_argument("--tag", default="")
+parser.add_argument("--seed", type=int, default=42, help="base_seed (noise)")
 parser.add_argument("--prompt", default="a cel-shaded 3D cartoon bear walking on the grass, vibrant colors")
 parser.add_argument("--compile", default="none", choices=["none", "blocks", "blocks-noattn"],
                     help="torch.compile each DiT/VACE transformer block (like Scope's Krea pipeline)")
@@ -70,6 +71,7 @@ config = OmegaConf.create(
         "height": h,
         "width": w,
         "vae_type": args.vae,
+        "base_seed": args.seed,
     }
 )
 
