@@ -262,7 +262,7 @@ button{margin-top:8px;background:var(--accent);color:#fff;border:0;border-radius
 <h2>Noise pattern</h2><select id="nm"><option value="auto">auto (preset default)</option><option value="fixed">fixed (same every chunk: less shimmer)</option><option value="random">random (new every chunk)</option></select>
 <h2>Reference image</h2><select id="ref"></select>
 <button id="rb">Refresh character (reset cache)</button>
-<h2>Prompt</h2><textarea id="p" rows="4"></textarea><button id="pb">Apply prompt</button>
+<h2>Prompt</h2><textarea id="p" rows="4"></textarea><button id="pb">Apply prompt</button> <span class="muted">Enter applies, Shift+Enter for a new line</span>
 <script>
 // Zone edges from this laptop: GPU target/slowdown 87/89 C, shutdown 92 C (nvidia-smi -q -d TEMPERATURE);
 // CPU TjMax 105 C (throttles from ~100), critical trip 110 C (thermal zone TCPU).
@@ -294,6 +294,7 @@ n.onchange=()=>post('/params',{noise:parseFloat(n.value)}).then(poll);
 nm.onchange=()=>post('/params',{noise_mode:nm.value}).then(poll);
 ref.onchange=()=>post('/params',{ref:ref.value}).then(poll);
 document.getElementById('pb').onclick=()=>post('/params',{prompt:p.value}).then(poll);
+p.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.getElementById('pb').click();}};
 document.getElementById('rb').onclick=()=>post('/refresh').then(poll);
 setInterval(poll,1000); poll();
 </script></body></html>"""
