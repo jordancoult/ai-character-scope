@@ -15,3 +15,5 @@
 !/bench/results.jsonl
 __pycache__/
 *.pyc
+# Experiment review clips (notes in experiments/ are tracked)
+/experiments/**/*.mp4
