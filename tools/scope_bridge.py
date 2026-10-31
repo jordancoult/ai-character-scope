@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -26,12 +27,13 @@ from pathlib import Path
 import httpx
 import torch
 from aiohttp import web
-from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
+from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
 from aiortc.contrib.media import MediaPlayer
 from av import VideoFrame
 
 sys.path.insert(0, str(Path(__file__).parent))
 from upscalers import Upscaler  # noqa: E402
+import numpy as np  # noqa: E402
 
 PRESETS = {
     # Chosen by tools/quality_metrics.py sweeps on a real webcam clip (README: "Quality sweep").
@@ -47,7 +49,8 @@ PRESETS = {
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--server", default="http://127.0.0.1:8000")
-parser.add_argument("--input", default="/dev/video0", help="v4l2 device or video file")
+parser.add_argument("--input", default="/dev/video0", help="v4l2 device, video file, or still image (animated from that image)")
+parser.add_argument("--landscape", action="store_true", help="16:9 instead of 9:16 (swaps generation and output sizes)")
 parser.add_argument("--input-size", default="1280x720", help="Capture size for v4l2 devices")
 parser.add_argument("--output", default="/dev/video10", help="v4l2loopback device or .mp4 path")
 parser.add_argument("--size", type=int, nargs=2, default=[576, 320], metavar=("H", "W"), help="Generation size")
@@ -63,6 +66,8 @@ parser.add_argument("--pipeline", default="streamdiffusionv2", choices=["streamd
                          "3 latent frames per chunk, no depth presets, no Blackwell speed patches")
 parser.add_argument("--vae", default=None, choices=["tae", "lighttae", "wan", "lightvae"],
                     help="Override the VAE (default: tae for streamdiffusionv2, lighttae for longlive)")
+parser.add_argument("--lora", nargs="+", default=None, metavar="PATH[:SCALE]",
+                    help="Extra LoRA(s) merged at load, e.g. models/lora/hstoric/x.safetensors:0.5")
 parser.add_argument("--seed", type=int, default=None, help="Base noise seed (load time; default: Scope's)")
 parser.add_argument("--steps", type=int, nargs="+", default=None, help="Override every preset's denoising steps")
 parser.add_argument("--noise-mode", default=None, choices=["auto", "fixed", "random"],
@@ -74,6 +79,13 @@ parser.add_argument("--record-input", default=None, help="Also save the cropped 
 parser.add_argument("--duration", type=float, default=0, help="Stop after N seconds (0 = run until Ctrl+C)")
 parser.add_argument("--no-load", action="store_true", help="Skip pipeline load (already loaded)")
 args = parser.parse_args()
+IMAGE_INPUT = Path(args.input).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+if args.landscape:
+    args.size, args.out_size = sorted(args.size), sorted(args.out_size)  # (H, W) with H < W
+if IMAGE_INPUT and args.noise_scale is None:
+    args.noise_scale = 0.95  # a still image gives the model no motion; more noise = more freedom to move
+if IMAGE_INPUT and args.noise_mode is None:
+    args.noise_mode = "random"  # fresh noise each chunk is what animates a still input
 if args.noise_scale is None:
     args.noise_scale = 0.9 if args.pipeline == "longlive" else 0.75
 if args.noise_mode is None:
@@ -93,10 +105,26 @@ state = {"preset": args.preset, "fps": 0.0, "upscale": None, "noise": args.noise
          "upscale_override": None, "vace_input": False,
          # sink_frames None = model default (3); noise_controller = Scope's motion-adaptive noise;
          # transition_steps = chunks to blend a new prompt over; zoom/y_offset = camera framing; sharpen = upscaler
+         # which graph node feeds the VACE reference / the sink image (images are interchangeable)
+         "ref_source": "ref", "start_source": "start",
          "sink_frames": None, "noise_controller": False, "transition_steps": 0, "zoom": 1.0, "y_offset": 0.0,
-         "sharpen": 0.6,
+         "sharpen": 0.6, "depth_cutoff": 0.0, "sink_refresh_s": 0.0,
          "prompt": args.prompt, "ref": [str(Path(r).resolve()) for r in args.ref] if args.ref else []}
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
+TMP = Path(__file__).resolve().parents[1] / ".tmp"
+# Live settings that survive "Restart with these settings" (and are cleared by "Reset to preset")
+OVERRIDES = {"depth": None, "steps": None, "start": None, "vace_scale": args.vace_scale,
+             "attn": {"sink": 1.0, "recent": 1.0, "current": 1.0, "text": 1.0}, "attn_on": True,
+             "upscale_override": None, "vace_input": False, "sink_frames": None, "noise_controller": False,
+             "transition_steps": 0, "zoom": 1.0, "y_offset": 0.0, "sharpen": 0.6, "depth_cutoff": 0.0, "sink_refresh_s": 0.0, "noise": args.noise_scale,
+             "ref_source": "ref", "start_source": "start"}
+_restore = os.environ.pop("SCOPE_BRIDGE_RESTORE", None)
+if _restore and Path(_restore).is_file():
+    for k, v in json.loads(Path(_restore).read_text()).items():
+        if k in OVERRIDES:
+            state[k] = v
+    Path(_restore).unlink()
+    print(f"[bridge] restored live settings from before the restart", flush=True)
 SAVED = Path(__file__).resolve().parents[1] / "saved_settings"
 GRAPH_PAGE = Path(__file__).resolve().parent / "graph_page.html"
 UPSCALERS = ["bilinear", "bicubic", "bicubic-sharp", "animevideov3", "general-x4v3"]
@@ -109,6 +137,7 @@ STEP_LISTS = {1: [750], 2: [750, 400], 3: [750, 500, 250], 4: [750, 600, 400, 20
 # frames on both pipelines) plus camera frames already queued when the reset lands.
 START_HOLD_FRAMES = 24
 inject = {"img": None, "left": 0}
+last_cam = {"frame": None}  # latest cropped camera frame (for "camera -> VACE reference" snapshots)
 sent_params: dict = {}  # everything sent to Scope so far, merged (for export)
 
 
@@ -132,7 +161,7 @@ def load_start_image(name: str):
 
 def effective_depth(preset: int) -> bool:
     if args.pipeline != "streamdiffusionv2":
-        return False
+        return bool(state["depth"])  # LongLive: depth only when switched on explicitly (presets keep it off)
     return PRESETS[preset]["depth_vace"] if state["depth"] is None else state["depth"]
 
 
@@ -144,7 +173,9 @@ SINK_MAX = 10 if args.pipeline == "longlive" else 4  # must stay below the KV wi
 LAUNCH_ENV = ["MODEL", "PRESET", "NOISE_MODE", "CAMERA", "CAMERA_SIZE", "SCOPE_FUSED_KV", "SCOPE_COMPILE_BLOCKS",
               "SCOPE_COMPILE_TAE", "SCOPE_FP8_ROWWISE", "SCOPE_KV_FRAMES", "SCOPE_NOISE_T_OFFSET",
               "SCOPE_OUTPUT_TARGET_FRAMES", "SCOPE_SINK_QUEUE_MAX", "SCOPE_INPUT_QUEUE_MAX", "SCOPE_PRELOAD_DEPTH",
-              "SCOPE_RING_KV", "SCOPE_SKIP_CLEAN_KV"]
+              "SCOPE_RING_KV", "SCOPE_SKIP_CLEAN_KV", "ORIENTATION", "INPUT_IMAGE"]
+LAUNCH_EXTRA = ["BRIDGE_ARGS", "NO_AUDIO"]
+restart_requested = {"yes": False}
 
 
 def launch_settings() -> dict:
@@ -175,6 +206,8 @@ def preset_params(preset: int, with_ref: bool) -> dict:
         "depth_vace": effective_depth(preset),
         "vace_context_scale": state["vace_scale"],
         "attention_weights": attention_weights(),
+        "depth_cutoff": state["depth_cutoff"],
+        "sink_refresh_s": state["sink_refresh_s"],
         "vace_use_input_video": state["vace_input"] and not effective_depth(preset),
         "reset_cache": True,
     }
@@ -217,6 +250,11 @@ async def load_pipeline(client: httpx.AsyncClient) -> None:
     load_params = {"height": H, "width": W, "vae_type": vae, "vace_enabled": True}  # always: depth presets need VACE even without a ref
     if args.seed is not None:
         load_params["base_seed"] = args.seed
+    if args.lora:
+        load_params["loras"] = []
+        for spec in args.lora:
+            path, _, scale = spec.partition(":")
+            load_params["loras"].append({"path": str(Path(path).resolve()), "scale": float(scale or 1.0)})
     r = await client.post("/api/v1/pipeline/load",
                           json={"pipeline_ids": [args.pipeline], "load_params": load_params})
     r.raise_for_status()
@@ -229,6 +267,29 @@ async def load_pipeline(client: httpx.AsyncClient) -> None:
             raise RuntimeError(f"pipeline load failed: {status}")
         await asyncio.sleep(1)
     print("[bridge] pipeline loaded", flush=True)
+
+
+class StillImageTrack(VideoStreamTrack):
+    """30 fps source from a single image with a slow, gentle sway (zoom + drift) so the model
+    gets a little motion to animate from instead of a frozen frame."""
+
+    def __init__(self, path):
+        super().__init__()
+        from PIL import Image
+        self.img = np.asarray(Image.open(path).convert("RGB"))
+        self.t0 = time.perf_counter()
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+        t = time.perf_counter() - self.t0
+        ih, iw = self.img.shape[:2]
+        z = 1.06 + 0.03 * np.sin(t * 0.5)  # 1.03..1.09 zoom, ~12 s period
+        ch, cw = round(ih / z), round(iw / z)
+        y0 = round((ih - ch) / 2 + (ih - ch) / 2 * 0.6 * np.sin(t * 0.37))
+        x0 = round((iw - cw) / 2 + (iw - cw) / 2 * 0.6 * np.sin(t * 0.29 + 1))
+        frame = VideoFrame.from_ndarray(np.ascontiguousarray(self.img[y0 : y0 + ch, x0 : x0 + cw]), format="rgb24")
+        frame.pts, frame.time_base = pts, time_base
+        return frame
 
 
 class CropResizeTrack(MediaStreamTrack):
@@ -282,9 +343,11 @@ class CropResizeTrack(MediaStreamTrack):
         else:
             new = frame
         new = new.reformat(width=self.width, height=self.height, format="yuv420p")
+        last_cam["frame"] = new
         if inject["left"] > 0 and inject["img"] is not None:
             inject["left"] -= 1
             new = VideoFrame.from_ndarray(inject["img"], format="rgb24").reformat(format="yuv420p")
+        last_cam["sent"] = new  # exactly what goes to the model (after crop/zoom and start-image inject)
         new.pts, new.time_base = frame.pts, frame.time_base
         if args.latency_probe:
             luma = float(new.to_ndarray(format="gray")[::8, ::8].mean())
@@ -427,7 +490,11 @@ async def main() -> None:
         if not args.no_load:
             await load_pipeline(client)
 
-        if args.input.startswith("/dev/video"):
+        if IMAGE_INPUT:
+            player = None
+            source_track = StillImageTrack(args.input)
+            print(f"[bridge] input: still image {args.input} (animated, noise {args.noise_scale}, {args.noise_mode})", flush=True)
+        elif args.input.startswith("/dev/video"):
             player = MediaPlayer(args.input, format="v4l2",
                                  options={"video_size": args.input_size, "framerate": "30", "input_format": "mjpeg"})
         else:
@@ -435,10 +502,29 @@ async def main() -> None:
 
         pc = RTCPeerConnection()
         channel = pc.createDataChannel("parameters", ordered=True)
-        camera_track = CropResizeTrack(player.video, W, H, record=args.record_input)
+        if player is not None:
+            source_track = player.video
+        camera_track = CropResizeTrack(source_track, W, H, record=args.record_input)
         pc.addTransceiver(camera_track, direction="sendrecv")
         done = asyncio.Event()
         ffmpeg = open_output()
+
+        async def check_output_format():
+            # v4l2loopback keeps its old size while any reader (ffplay, OBS) has it open, so switching
+            # portrait <-> landscape with a viewer open writes frames into the wrong shape (stripes).
+            await asyncio.sleep(3)
+            if not args.output.startswith("/dev/video"):
+                return
+            try:
+                fmt = Path(f"/sys/devices/virtual/video4linux/{Path(args.output).name}/format").read_text().strip()
+            except OSError:
+                return
+            if f":{OW}x{OH}@" not in fmt:
+                state["output_warning"] = (f"{args.output} is stuck at {fmt.split(':')[-1].split('@')[0]}, but the bridge writes "
+                                           f"{OW}x{OH}: output is scrambled. Close ffplay/OBS, restart, then reopen them.")
+                print(f"[bridge] WARNING: {state['output_warning']}", flush=True)
+
+        asyncio.ensure_future(check_output_format())
         upscalers: dict[str, Upscaler] = {}
 
         def current_upscaler() -> Upscaler:
@@ -527,6 +613,18 @@ async def main() -> None:
             app = web.Application()
             # node-graph branch: the graph is the main page (read per request, so edits show on reload)
             app.router.add_get("/", lambda _: web.Response(text=GRAPH_PAGE.read_text(), content_type="text/html"))
+            async def cam_jpg(_):
+                frame = last_cam.get("sent")
+                if frame is None:
+                    return web.Response(status=204)
+                import io
+                from PIL import Image
+                buf = io.BytesIO()
+                Image.fromarray(frame.to_ndarray(format="rgb24")).save(buf, "JPEG", quality=80)
+                return web.Response(body=buf.getvalue(), content_type="image/jpeg",
+                                    headers={"Cache-Control": "no-store"})
+
+            app.router.add_get("/cam.jpg", cam_jpg)
             app.router.add_get("/classic", lambda _: web.Response(text=CONTROL_PAGE, content_type="text/html"))
             app.router.add_get("/state", lambda _: web.json_response(
                 {"preset": state["preset"], "fps": state["fps"], "upscale": state["upscale"],
@@ -535,17 +633,19 @@ async def main() -> None:
                  "label": ("[LongLive] " if args.pipeline == "longlive" else "") + PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
                  "fixed_noise": fixed_noise(state["preset"]), "prompt": state["prompt"],
                  "depth": state["depth"], "depth_on": effective_depth(state["preset"]),
-                 "depth_available": args.pipeline == "streamdiffusionv2",
+                 "depth_available": True,  # LongLive gained depth_vace on the node-graph branch
                  "steps": state["steps"], "n_steps": len(effective_steps(state["preset"])),
                  "start": state["start"], "vace_scale": state["vace_scale"],
                  "attn": state["attn"], "attn_on": state["attn_on"],
                  "vace_input": state["vace_input"], "upscale_override": state["upscale_override"],
+                 "ref_source": state["ref_source"], "start_source": state["start_source"],
                  "upscalers": UPSCALERS, "pipeline": args.pipeline, "presets": {k: v["label"] for k, v in PRESETS.items()},
                  "noise_pattern": "fixed" if fixed_noise(state["preset"]) else "random",
                  "step_list": effective_steps(state["preset"]),
                  "sink_frames": state["sink_frames"], "sink_max": SINK_MAX, "noise_controller": state["noise_controller"],
                  "transition_steps": state["transition_steps"], "zoom": state["zoom"], "y_offset": state["y_offset"],
-                 "sharpen": state["sharpen"], "launch": launch_settings(),
+                 "sharpen": state["sharpen"], "depth_cutoff": state["depth_cutoff"], "sink_refresh_s": state["sink_refresh_s"], "launch": launch_settings(),
+                 "output_warning": state.get("output_warning"),
                  "ref": [Path(r).name for r in state["ref"]],
                  "refs": sorted(f.name for f in ASSETS.glob("*.png"))}))
 
@@ -553,7 +653,7 @@ async def main() -> None:
                 body = await request.json()
                 update = {}
                 if "noise" in body:
-                    state["noise"] = max(0.3, min(0.98, float(body["noise"])))
+                    state["noise"] = max(0.3, min(1.0, float(body["noise"])))
                     update["noise_scale"] = state["noise"]
                 if body.get("noise_mode") in ("auto", "fixed", "random"):
                     state["noise_mode"] = body["noise_mode"]
@@ -566,6 +666,19 @@ async def main() -> None:
                                                 "temporal_interpolation_method": "linear"}
                     else:
                         update["prompts"] = target
+                if body.get("ref_camera"):  # camera -> VACE reference: snapshot the current frame
+                    frame = last_cam["frame"]
+                    if frame is not None:
+                        from PIL import Image
+
+                        snap = ASSETS / "camera_snapshot.png"
+                        Image.fromarray(frame.to_ndarray(format="rgb24")).save(snap)
+                        state["ref"], state["ref_source"] = [str(snap)], "camera"
+                        update = preset_params(state["preset"], with_ref=True)
+                if body.get("ref_source") in ("ref", "start"):
+                    state["ref_source"] = body["ref_source"]
+                if body.get("start_source") in ("start", "ref"):
+                    state["start_source"] = body["start_source"]
                 if body.get("ref") == "":  # "(none)": prompt only
                     state["ref"] = []
                     update = preset_params(state["preset"], with_ref=True)  # reset cache without a ref
@@ -610,9 +723,15 @@ async def main() -> None:
                 if "sharpen" in body:
                     state["sharpen"] = max(0.0, min(2.0, float(body["sharpen"])))
                     current_upscaler()
+                if "sink_refresh_s" in body:  # keyframe memory: refresh one sink slot every N s (LongLive)
+                    state["sink_refresh_s"] = max(0.0, min(60.0, float(body["sink_refresh_s"])))
+                    update["sink_refresh_s"] = state["sink_refresh_s"]
+                if "depth_cutoff" in body:  # body-only depth: background becomes "unknown" to VACE
+                    state["depth_cutoff"] = max(0.0, min(0.95, float(body["depth_cutoff"])))
+                    update["depth_cutoff"] = state["depth_cutoff"]
                 for key in ("sink", "recent", "current", "text"):
                     if f"attn_{key}" in body:
-                        state["attn"][key] = max(0.05, min(4.0, float(body[f"attn_{key}"])))
+                        state["attn"][key] = max(0.05 if key == "current" else 0.0, min(4.0, float(body[f"attn_{key}"])))
                         update["attention_weights"] = attention_weights()
                 if "attn_on" in body:
                     state["attn_on"] = bool(body["attn_on"])
@@ -661,6 +780,80 @@ async def main() -> None:
                 return web.json_response({"ok": True, "path": str(path)})
 
             app.router.add_post("/save", save)
+
+            async def reset_overrides(request):
+                for k, v in OVERRIDES.items():
+                    state[k] = json.loads(json.dumps(v))  # fresh copy of dicts
+                state["noise_mode"] = args.noise_mode
+                apply_preset(state["preset"])  # re-sends everything + resets memory
+                print("[bridge] all live settings reset to the preset", flush=True)
+                return web.json_response({"ok": True})
+
+            app.router.add_post("/reset_overrides", reset_overrides)
+
+            async def load(request):
+                """Load a saved settings file or a full export: live settings apply now (with a memory reset);
+                launch settings (model, size, env) are returned so the page can offer a restart."""
+                d = await request.json()
+                if "bridge_state" in d:  # "Export everything" file
+                    src, launch = d["bridge_state"], d.get("launch") or {}
+                else:  # "Save" file: map its readable names back to state keys
+                    src = {"noise": d.get("noise"), "noise_mode": d.get("noise_mode"), "depth": d.get("depth"),
+                           "steps": d.get("steps"), "start": d.get("start_image"), "vace_scale": d.get("conditioning_strength"),
+                           "attn_on": d.get("attention_steering_on"), "attn": d.get("attention_weights"),
+                           "vace_input": d.get("camera_as_vace_input"), "upscale_override": d.get("upscale_override"),
+                           "preset": d.get("preset"), "prompt": d.get("prompt"),
+                           "ref": [f"assets/{n}" for n in d.get("reference_image") or []]}
+                    launch = {"model": d.get("model"), "size": d.get("size"), "vae": d.get("vae")}
+                    src = {k: v for k, v in src.items() if v is not None or k in ("depth", "steps", "start", "upscale_override")}
+                skipped = []
+                for k in list(OVERRIDES) + ["noise_mode", "prompt"]:
+                    if k in src:
+                        state[k] = json.loads(json.dumps(src[k]))
+                if isinstance(state.get("sink_frames"), int):
+                    state["sink_frames"] = max(0, min(SINK_MAX, state["sink_frames"]))
+                if "ref" in src:
+                    refs = []
+                    for r in src["ref"] or []:
+                        path = ASSETS / Path(r).name
+                        (refs.append(str(path)) if path.is_file() else skipped.append(Path(r).name))
+                    state["ref"] = refs
+                if state.get("start") and not (ASSETS / Path(state["start"]).name).is_file():
+                    skipped.append(state["start"]); state["start"] = None
+                preset = src.get("preset") if src.get("preset") in PRESETS else state["preset"]
+                state["preset"] = preset
+                current_upscaler()
+                params = preset_params(preset, with_ref=True)
+                params["prompts"] = [{"text": state["prompt"], "weight": 1.0}]
+                send(params)
+                mismatch = []
+                if launch.get("model") and launch["model"] != args.pipeline:
+                    mismatch.append(f"model {launch['model']}")
+                if launch.get("size") and sorted(launch["size"]) != sorted([H, W]):
+                    mismatch.append(f"size {launch['size'][0]}x{launch['size'][1]}")
+                print(f"[bridge] loaded settings ({d.get('name') or d.get('exported_at') or 'file'})"
+                      + (f"; needs restart for: {', '.join(mismatch)}" if mismatch else ""), flush=True)
+                return web.json_response({"ok": True, "launch": launch, "restart_for": mismatch, "skipped": skipped})
+
+            app.router.add_post("/load", load)
+
+            async def restart(request):
+                body = await request.json()
+                env = {k: str(v) for k, v in (body.get("env") or {}).items() if k in LAUNCH_ENV + LAUNCH_EXTRA}
+                env["PRESET"] = str(state["preset"])
+                env["NOISE_MODE"] = state["noise_mode"]
+                env["PROMPT"] = state["prompt"]
+                env["CHARACTER_REF"] = " ".join(f"assets/{Path(r).name}" for r in state["ref"])
+                restore = TMP / "restart_state.json"
+                restore.write_text(json.dumps({k: state[k] for k in OVERRIDES}))
+                env["SCOPE_BRIDGE_RESTORE"] = str(restore)
+                (TMP / "restart.env").write_text("".join(f"{k}={shlex.quote(v)}\n" for k, v in env.items()))
+                print(f"[bridge] restart requested: {env}", flush=True)
+                restart_requested["yes"] = True
+                asyncio.get_running_loop().call_later(0.3, done.set)
+                return web.json_response({"ok": True})
+
+            app.router.add_post("/restart", restart)
 
             async def export(request):
                 body = await request.json() if request.can_read_body else {}
@@ -728,7 +921,7 @@ async def main() -> None:
             if runner:
                 await runner.cleanup()
             await pc.close()
-            player.video.stop()
+            source_track.stop()
             if camera_track.recorder:
                 camera_track.recorder.stdin.close()
                 camera_track.recorder.wait()
@@ -741,3 +934,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+    if restart_requested["yes"]:
+        sys.exit(75)  # start_scope.sh relaunches with .tmp/restart.env

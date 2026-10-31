@@ -44,14 +44,21 @@
   .port { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:3px 0; }
   .port .dot { width:12px; height:12px; border-radius:50%; background:#111116; border:2px solid var(--wire); flex:none; }
   .ins .port { margin-left:-7px; } .outs .port { margin-right:-7px; justify-content:flex-end; }
-  .outs .dot { cursor:crosshair; } .ins .dot.hot { background:var(--accent); border-color:var(--accent); }
+  .outs .dot { cursor:crosshair; } .outs .dot:hover { box-shadow:0 0 0 4px #7d8cff55; }
+  .ins .dot.compat { background:var(--ok); border-color:var(--ok); box-shadow:0 0 0 5px #3fbf6f44; animation:pulse 1s ease-in-out infinite; }
+  .ins .dot.compat.hot { background:#fff; border-color:#fff; box-shadow:0 0 0 7px #3fbf6f88; }
+  .ins .dot.connected { box-shadow:0 0 0 5px #7d8cff44; }
+  body.connecting .ins .dot:not(.compat) { opacity:.35; }
+  @keyframes pulse { 50% { box-shadow:0 0 0 8px #3fbf6f22; } }
   .k-src .hd { background:#1d2a24; } .k-cond .hd { background:#2a2440; } .k-mem .hd { background:#2c2230; }
+  .campv { display:block; max-width:100%; max-height:150px; margin:6px auto 0; border-radius:4px; background:#000; min-height:40px; }
   .k-model .hd { background:#3a1f2a; } .k-out .hd { background:#1f2a3a; } .k-launch .hd { background:#3a3320; }
   .node .bd input[type=range] { width:100%; accent-color:var(--accent); }
   .node.k-launch { width:300px; }
   .lrow { display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:12px; }
   .lrow select, .lrow input[type=text] { width:150px !important; }
   .cmd { font:11px ui-monospace, monospace; background:#0b0b0e; border:1px solid var(--line); border-radius:6px; padding:6px; white-space:pre-wrap; word-break:break-all; }
+  .ap { font-size:11px; margin-left:4px; cursor:help; } .ar { color:#c58bff; } .ai { color:#f0c03c; }
   .badge { font-size:10px; background:#5a4a1c; color:#ffe08a; border-radius:4px; padding:1px 5px; font-weight:600; }
   .pill { position:absolute; transform:translate(-50%,-50%); background:#111116; border:1px solid var(--wire); color:var(--fg);
           border-radius:999px; padding:2px 9px; font:600 12px system-ui; cursor:pointer; user-select:none; white-space:nowrap; z-index:2; }
@@ -63,6 +70,8 @@
   #pop input[type=range] { width:100%; accent-color:var(--accent); }
   #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#2a2a33; border:1px solid var(--line);
            padding:9px 14px; border-radius:8px; display:none; z-index:30; }
+  #toast.ok { border-color:var(--ok); } #toast.reset { border-color:#c58bff; } #toast.err { border-color:var(--bad); }
+  #overlay { position:fixed; inset:0; background:#000c; display:none; z-index:40; align-items:center; justify-content:center; font-size:18px; flex-direction:column; gap:10px; }
   #help { position:fixed; bottom:12px; left:14px; color:var(--muted); font-size:12px; z-index:5; }
 </style>
 </head>
@@ -71,54 +80,76 @@
   <span class="fps"><span id="fps">-</span> fps</span>
   <span class="t">GPU <b id="gt">-</b></span><span class="t">CPU <b id="ct">-</b></span>
   <select id="preset" title="Preset: sets the defaults that the graph overrides"></select>
+  <button id="resetp" class="sec" title="Clear every graph override (prompt and reference image are kept)">Reset to preset</button>
   <button id="refresh" class="sec" title="Clear the memory; the sink is rebuilt from what feeds it">Reset memory</button>
   <input id="svn" placeholder="settings name" style="width:150px">
-  <button id="save">Save</button><button id="export" class="sec" title="Download everything: all settings, parameters sent to Scope, launch env, git versions, layout">Export everything</button><span id="svm" class="muted"></span>
+  <button id="save">Save</button><button id="loadb" class="sec" title="Load a saved settings file or an export (live settings apply now; launch settings go to the Launch node)">Load…</button><input type="file" id="loadf" accept=".json,application/json" hidden><button id="export" class="sec" title="Download everything: all settings, parameters sent to Scope, launch env, git versions, layout">Export everything</button><span id="svm" class="muted"></span>
   <span style="flex:1"></span>
+  <span class="muted" title="How changes apply"><span class="ai">⚡</span> instant &nbsp;<span class="ar">↻</span> resets memory &nbsp;<span class="badge">RESTART</span> needs restart</span>
   <button id="helpb" class="sec" title="How to use">?</button>
   <button id="layout" class="sec">Reset layout</button>
   <a href="/classic" style="color:var(--muted)">classic page</a>
 </div>
 <div id="view"><div id="world"><svg id="wires" width="1" height="1"></svg></div></div>
 <div id="pop"></div><div id="toast"></div>
+<div id="overlay"><div id="ovt">Restarting…</div><div class="muted">Watch the start_scope.sh terminal for progress.</div></div>
 
 <script>
 const $ = id => document.getElementById(id);
 const post = (url, body) => fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body || {})});
 let S = null;              // last /state
+// How each change applies: instantly (memory kept) or with an automatic memory reset
+const RESET_KEYS = ['depth', 'vace_input', 'ref', 'start', 'sink_frames', 'steps', 'ref_camera'];
+const resets = body => Object.keys(body).some(k => RESET_KEYS.includes(k)) || ('prompt' in body && !S.transition_steps);
+const NAMES = {noise:'Noise level', attn_sink:'Attention to sink', attn_recent:'Attention to recent', attn_current:'Attention to current',
+  attn_text:'Prompt strength', vace_scale:'Conditioning strength', zoom:'Zoom', y_offset:'Framing', sharpen:'Sharpen', upscale:'Upscaler',
+  noise_mode:'Noise pattern', noise_controller:'Motion-adaptive noise', transition_steps:'Prompt blending', attn_on:'Attention steering',
+  steps:'Diffusion steps', sink_frames:'Sink size', depth:'Depth input', vace_input:'Camera → VACE', ref:'Reference image', start:'Start image', prompt:'Prompt', ref_camera:'Camera snapshot as reference', ref_source:'', start_source:''};
+function setP(body) {
+  const r = resets(body), what = Object.keys(body).map(k => NAMES[k] ?? k).filter(Boolean).join(', ');
+  return post('/params', body).then(res => {
+    if (!res.ok) throw new Error(res.status);
+    if ('vace_input' in body) toast('⟳ Camera → VACE control is wired when the stream starts: click Restart (Launch node) to apply. On: the camera only steers (image starts from pure noise); off: the camera is the starting image.', 'reset');
+    else toast(r ? `↻ ${what}: applied, memory reset (character rebuilds over ~1 s)` : `⚡ ${what}: applied instantly`, r ? 'reset' : 'ok');
+    poll();
+  }).catch(() => toast(`✗ ${what}: not applied (is the bridge running?)`, 'err'));
+}
+const TAG_I = '<span class="ap ai" title="Applies instantly, memory kept">⚡</span>';
+const TAG_R = '<span class="ap ar" title="Applies right away with an automatic memory reset">↻</span>';
 let view = {x: 20, y: 10, k: 0.9};
 let dragging = false;
 
 // ---------- nodes ----------
 const NODES = {
-  cam:     {t:'Camera', k:'src', x:20, y:40, outs:['frames'], body:()=>`<span class="muted">Webcam, cropped to 9:16</span>
+  cam:     {t:'Camera', k:'src', x:20, y:40, outs:['frames'], body:()=>`<span class="muted">Preview: exactly what the model receives</span>
             ${slider('zoom', 'Zoom', S.zoom, 1, 3, 0.05)}${slider('y_offset', 'Frame up / down', S.y_offset, -1, 1, 0.05)}`},
-  start:   {t:'Start image', k:'src', x:20, y:250, outs:['image'], body:()=>`<select data-act="start-pick">${imgOptions(S.start||pick.start)}</select><span class="muted">Shown for ~0.8 s after a reset to seed the sink</span>`},
-  ref:     {t:'Reference image', k:'src', x:20, y:420, outs:['image'], body:()=>`<select data-act="ref-pick">${imgOptions((S.ref[0])||pick.ref)}</select><span class="muted">Encoded once per reset (VACE R2V)</span>`},
-  prompt:  {t:'Prompt', k:'src', x:20, y:600, outs:['text'], body:()=>`<textarea data-act="prompt" rows="3"></textarea><span class="muted">Enter applies</span>
+  start:   {t:'Start image', k:'src', x:20, y:400, outs:['image'], body:()=>`<span class="muted">Image${TAG_R}</span><select data-act="start-pick">${imgOptions((S.start_source==='start'&&S.start)||(S.ref_source==='start'&&S.ref[0])||pick.start)}</select><span class="muted">Shown for ~0.8 s after a reset to seed the sink</span>`},
+  ref:     {t:'Reference image', k:'src', x:20, y:600, outs:['image'], body:()=>`<span class="muted">Image${TAG_R}</span><select data-act="ref-pick">${imgOptions((S.ref_source==='ref'&&S.ref[0])||(S.start_source==='ref'&&S.start)||pick.ref)}</select><span class="muted">Encoded once per reset (VACE R2V)</span>`},
+  prompt:  {t:'Prompt', k:'src', x:20, y:800, outs:['text'], body:()=>`<textarea data-act="prompt" rows="3"></textarea><span class="muted">Enter applies · ${S.transition_steps ? TAG_I + ' blends in, memory kept' : TAG_R + ' instant change resets memory'}</span>
             <label class="lrow">Blend new prompt over <select data-act="transition" style="width:80px">${[0,2,4,8,16].map(n=>`<option value="${n}" ${S.transition_steps===n?'selected':''}>${n?n+' chunks':'instant'}</option>`).join('')}</select></label>`},
-  depth:   {t:'Depth', k:'cond', x:300, y:20, ins:['frames'], outs:['depth'], body:()=> S.depth_available ? `<span class="muted">Video Depth Anything, every chunk</span>` : `<span class="muted">Not available on LongLive</span>`},
+  depth:   {t:'Depth', k:'cond', x:300, y:20, ins:['frames'], outs:['depth'], body:()=> S.depth_available ? `<span class="muted">Video Depth Anything, every chunk</span>${slider('depth_cutoff', 'Body only (drop background)', S.depth_cutoff || 0, 0, 0.9, 0.05)}<span class="muted">0 = full scene depth. ~0.5 keeps just you; the model invents the rest</span>` : `<span class="muted">Not available</span>`},
   enc:     {t:'VAE encode', k:'cond', x:300, y:190, ins:['frames'], outs:['latent'], body:()=>`<span class="muted">${S.pipeline==='longlive'?'lighttae':'tae'} · 4 frames → 1 latent frame</span>`},
-  noise:   {t:'Noise', k:'cond', x:300, y:330, outs:['noise'], body:()=>`<select data-act="noise-mode">${['auto','fixed','random'].map(m=>`<option ${S.noise_mode===m?'selected':''}>${m}</option>`).join('')}</select><span class="muted">Pattern now: ${S.noise_pattern}</span>
-            <label><input type="checkbox" data-act="noise-ctl" ${S.noise_controller?'checked':''}> motion-adaptive level</label>`},
+  noise:   {t:'Noise', k:'cond', x:300, y:330, outs:['noise'], body:()=>`<span class="muted">Pattern${TAG_I}</span><select data-act="noise-mode">${['auto','fixed','random'].map(m=>`<option ${S.noise_mode===m?'selected':''}>${m}</option>`).join('')}</select><span class="muted">Pattern now: ${S.noise_pattern}</span>
+            <label><input type="checkbox" data-act="noise-ctl" ${S.noise_controller?'checked':''}> motion-adaptive level${TAG_I}</label>`},
   vace:    {t:'VACE', k:'cond', x:580, y:30, ins:['control','reference'], outs:['hints'], body:()=>`<span class="muted">Turns depth/camera and the reference into hints added inside the model</span>`},
   sink:    {t:'Memory: sink', k:'mem', x:580, y:215, ins:['first frames'], outs:['kv'], body:()=>`<span class="muted">First frames after a reset; never evicted</span>
-            <label class="lrow">Sink size <select data-act="sink" style="width:110px"><option value="">default (3)</option>${Array.from({length:S.sink_max+1},(_, i)=>`<option ${S.sink_frames===i?'selected':''}>${i}</option>`).join('')}</select></label>
-            <span class="muted">latent frames (of ${S.pipeline==='longlive'?12:6} in memory)</span>`},
+            <label class="lrow">Sink size${TAG_R} <select data-act="sink" style="width:110px"><option value="">default (3)</option>${Array.from({length:S.sink_max+1},(_, i)=>`<option ${S.sink_frames===i?'selected':''}>${i}</option>`).join('')}</select></label>
+            <span class="muted">latent frames (of ${S.pipeline==='longlive'?12:6} in memory)</span>
+            ${S.pipeline==='longlive' ? `<label class="lrow">Keyframe memory${TAG_I} <select data-act="sink_refresh" style="width:110px">${[[0,'off'],[4,'every 4 s'],[7,'every 7 s'],[10,'every 10 s'],[15,'every 15 s']].map(([v,l])=>`<option value="${v}" ${(+S.sink_refresh_s||0)===v?'selected':''}>${l}</option>`).join('')}</select></label><span class="muted">Copies a fresh frame into one sink slot at a time, so memory spans ~slots × interval seconds</span>` : ''}`},
   current: {t:'Memory: current', k:'mem', x:580, y:420, ins:['latent','noise'], outs:['kv'], body:()=>`<span class="muted">The chunk being generated: noisy camera latent</span>`},
   recent:  {t:'Memory: recent', k:'mem', x:580, y:600, ins:['write'], outs:['kv'], body:()=>`<span class="muted">Rolling window of previous chunks</span>`},
   dit:     {t:'Denoiser (DiT)', k:'model', x:870, y:230, ins:['sink','recent','current','prompt','vace'], outs:['latent','memory'],
-            body:()=>`<label class="muted">Steps <select data-act="steps"><option value="">preset (${S.n_steps})</option>${[1,2,3,4,5].map(n=>`<option ${S.steps===n?'selected':''}>${n}</option>`).join('')}</select></label>
+            body:()=>`<label class="muted">Steps${TAG_R} <select data-act="steps"><option value="">preset (${S.n_steps})</option>${[1,2,3,4,5].map(n=>`<option ${S.steps===n?'selected':''}>${n}</option>`).join('')}</select></label>
                       <span class="muted">Timesteps: ${S.step_list.join(', ')}</span>
-                      <label><input type="checkbox" data-act="steer" ${S.attn_on?'checked':''}> attention steering</label>`},
+                      <label><input type="checkbox" data-act="steer" ${S.attn_on?'checked':''}> attention steering${TAG_I}</label>`},
   dec:     {t:'VAE decode', k:'out', x:1150, y:120, ins:['latent'], outs:['frames'], body:()=>`<span class="muted">Latent → 320×576 frames</span>`},
-  up:      {t:'Upscaler', k:'out', x:1150, y:270, ins:['frames'], outs:['frames'], body:()=>`<select data-act="upscale"><option value="">preset (${S.upscale})</option>${S.upscalers.map(u=>`<option ${S.upscale_override===u?'selected':''}>${u}</option>`).join('')}</select>
+  up:      {t:'Upscaler', k:'out', x:1150, y:270, ins:['frames'], outs:['frames'], body:()=>`<span class="muted">Method${TAG_I}</span><select data-act="upscale"><option value="">preset (${S.upscale})</option>${S.upscalers.map(u=>`<option ${S.upscale_override===u?'selected':''}>${u}</option>`).join('')}</select>
             ${S.upscale==='bicubic-sharp' ? slider('sharpen', 'Sharpen', S.sharpen, 0, 2, 0.05) : ''}`},
-  out:     {t:'Output', k:'out', x:1150, y:440, ins:['frames'], body:()=>`<span class="muted">/dev/video10 → OBS / ffplay</span>`},
+  out:     {t:'Output', k:'out', x:1150, y:500, ins:['frames'], body:()=>`<span class="muted">/dev/video10 → OBS / ffplay</span>`},
   launch:  {t:'Launch settings <span class="badge">RESTART</span>', k:'launch', x:1420, y:40, body:()=>launchBody()},
 };
 const pick = {start:null, ref:null};
-const slider = (act, label, v, min, max, step) => `<label class="muted">${label}: <b data-val="${act}">${(+v).toFixed(2)}</b></label>
+const slider = (act, label, v, min, max, step) => `<label class="muted">${label}${TAG_I}: <b data-val="${act}">${(+v).toFixed(2)}</b></label>
   <input type="range" data-act="${act}" min="${min}" max="${max}" step="${step}" value="${v}">`;
 
 // ---------- launch settings (need a restart) ----------
@@ -126,7 +157,7 @@ let L = null;  // draft
 const DEF = {SCOPE_FUSED_KV:'1', SCOPE_COMPILE_BLOCKS:'1', SCOPE_COMPILE_TAE:'1', SCOPE_FP8_ROWWISE:'1', SCOPE_NOISE_T_OFFSET:'0', SCOPE_OUTPUT_TARGET_FRAMES:'3'};
 function initLaunch() {
   const e = S.launch.env;
-  L = {MODEL: S.launch.model, size: S.launch.size.join(' '), vae: '', seed: S.launch.seed ?? '',
+  L = {MODEL: S.launch.model, size: [...S.launch.size].sort((a,b)=>b-a).join(' '), ORIENTATION: e.ORIENTATION || 'portrait', INPUT_IMAGE: e.INPUT_IMAGE || '', vae: '', seed: S.launch.seed ?? '',
        SCOPE_KV_FRAMES: e.SCOPE_KV_FRAMES || '', SCOPE_FUSED_KV: e.SCOPE_FUSED_KV ?? '1', SCOPE_COMPILE_BLOCKS: e.SCOPE_COMPILE_BLOCKS ?? '1',
        SCOPE_COMPILE_TAE: e.SCOPE_COMPILE_TAE ?? '1', SCOPE_FP8_ROWWISE: e.SCOPE_FP8_ROWWISE ?? '1', SCOPE_NOISE_T_OFFSET: e.SCOPE_NOISE_T_OFFSET ?? '0',
        SCOPE_OUTPUT_TARGET_FRAMES: e.SCOPE_OUTPUT_TARGET_FRAMES ?? '3', CAMERA_SIZE: S.launch.input_size};
@@ -137,6 +168,8 @@ function launchBody() {
   if (!L) initLaunch();
   const kvDef = S.pipeline === 'longlive' ? 12 : 6;
   return `<div class="lrow">Model ${sel('MODEL', [['streamdiffusionv2','StreamDiffusionV2'],['longlive','LongLive']])}</div>
+  <div class="lrow">Orientation ${sel('ORIENTATION', [['portrait','Portrait 9:16'],['landscape','Landscape 16:9']])}</div>
+  <div class="lrow">Input ${sel('INPUT_IMAGE', [['','Camera'], ...(S.refs||[]).map(f=>['assets/'+f, 'Animate image: '+f])])}</div>
   <div class="lrow">Generation size ${sel('size', [['512 288','288×512'],['576 320','320×576'],['640 352','352×640']])}</div>
   <div class="lrow">VAE ${sel('vae', [['','model default'],['tae','tae'],['lighttae','lighttae'],['wan','wan (slow)']])}</div>
   <div class="lrow">Seed <input type="text" data-launch="seed" value="${L.seed}" placeholder="default"></div>
@@ -148,7 +181,8 @@ function launchBody() {
   <div class="lrow">Noise-level offset ${sel('SCOPE_NOISE_T_OFFSET', [['0','0 (fixed)'],['100','100 (stock, sparkles)']])}</div>
   <div class="lrow">Output cushion (frames) ${sel('SCOPE_OUTPUT_TARGET_FRAMES', [['0','off'],['3','3'],['6','6'],['12','12']])}</div>
   <div class="lrow">Camera capture ${sel('CAMERA_SIZE', [['640x480','640×480'],['1280x720','1280×720'],['1920x1080','1920×1080']])}</div>
-  <span class="muted">Stop the server, then run:</span><div class="cmd" id="cmd">${launchCmd()}</div><button class="sec" data-act="copy-cmd">Copy command</button>`;
+  <span class="muted">Stop the server, then run:</span><div class="cmd" id="cmd">${launchCmd()}</div><button data-act="restart">Restart with these settings</button><button class="sec" data-act="copy-cmd">Copy command</button>
+  <span class="muted">Restarts in the same terminal (~40 s). Your live graph settings are kept.</span>`;
 }
 const shq = v => '"' + String(v).replace(/(["\\$`])/g, '\\$1') + '"';
 function launchCmd() {
@@ -161,6 +195,8 @@ function launchCmd() {
   if (L.MODEL !== 'streamdiffusionv2') env.push(`MODEL=${L.MODEL}`);
   env.push(`PRESET=${S.preset}`, `NOISE_MODE=${S.noise_mode}`);
   if (L.CAMERA_SIZE !== '1280x720') env.push(`CAMERA_SIZE=${L.CAMERA_SIZE}`);
+  if (L.ORIENTATION === 'landscape') env.push('ORIENTATION=landscape');
+  if (L.INPUT_IMAGE) env.push(`INPUT_IMAGE=${L.INPUT_IMAGE}`);
   if (S.ref.length) env.push(`CHARACTER_REF=assets/${S.ref[0]}`);
   env.push(`PROMPT=${shq(S.prompt)}`, 'NO_AUDIO=1');
   const ba = [];
@@ -179,24 +215,30 @@ const EDGES = [
   {id:'cam-enc', a:'cam.frames', b:'enc.frames', kind:'fixed'},
   {id:'cam-depth', a:'cam.frames', b:'depth.frames', kind:'fixed'},
   {id:'enc-cur', a:'enc.latent', b:'current.latent', kind:'fixed'},
-  {id:'noise-cur', a:'noise.noise', b:'current.noise', kind:'fixed', w:{key:'noise', label:'noise', get:()=>S.noise, min:0.3, max:0.98, step:0.01,
+  {id:'noise-cur', a:'noise.noise', b:'current.noise', kind:'fixed', w:{key:'noise', label:'noise', get:()=>S.noise, min:0.3, max:1.0, step:0.01,
      title:'Noise level', help:'How much of the camera latent is replaced by noise. Lower = follows you more, higher = more freedom for the model.'}},
   {id:'depth-vace', a:'depth.depth', b:'vace.control', kind:'toggle', on:()=>S.depth_on, set:v=>({depth:v?'on':'off'}),
      help:'Depth map as VACE control: tracks your pose and shape.'},
   {id:'cam-vace', a:'cam.frames', b:'vace.control', kind:'toggle', on:()=>S.vace_input, set:v=>({vace_input:v}),
      help:'Raw camera frames as VACE control (instead of depth). Untested: may copy the camera very literally.'},
-  {id:'ref-vace', a:'ref.image', b:'vace.reference', kind:'toggle', on:()=>S.ref.length>0, set:v=>({ref:v?(pick.ref||S.refs[0]):''}),
-     help:'Character reference image. Disconnect for prompt only.'},
+  {id:'ref-vace', a:'ref.image', b:'vace.reference', kind:'toggle', on:()=>S.ref.length>0 && S.ref_source==='ref',
+     set:v=>v?{ref:pick.ref||S.refs[0], ref_source:'ref'}:{ref:''}, help:'Character reference image. Disconnect for prompt only.'},
+  {id:'start-vace', a:'start.image', b:'vace.reference', kind:'toggle', on:()=>S.ref.length>0 && S.ref_source==='start',
+     set:v=>v?{ref:pick.start||S.refs[0], ref_source:'start'}:{ref:''}, help:'Use the Start image node\'s image as the VACE reference.'},
+  {id:'cam-vaceref', a:'cam.frames', b:'vace.reference', kind:'toggle', on:()=>S.ref.length>0 && S.ref_source==='camera',
+     set:v=>v?{ref_camera:true}:{ref:''}, help:'Snapshot of your current camera frame as the reference (re-connect to take a new snapshot).'},
   {id:'cam-sink', a:'cam.frames', b:'sink.first frames', kind:'toggle', on:()=>!S.start, set:v=>v?{start:''}:null,
      help:'The sink is built from the camera after each reset (default).'},
-  {id:'start-sink', a:'start.image', b:'sink.first frames', kind:'toggle', on:()=>!!S.start, set:v=>({start:v?(pick.start||S.refs[0]):''}),
-     help:'The sink is built from this image after each reset; then the camera takes over.'},
-  {id:'sink-dit', a:'sink.kv', b:'dit.sink', kind:'fixed', w:{...W_ATTN('sink'), label:'sink', title:'Attention to sink', help:'Lower = less anchored to the start, higher = holds the start look harder.'}},
-  {id:'recent-dit', a:'recent.kv', b:'dit.recent', kind:'fixed', w:{...W_ATTN('recent'), label:'recent', title:'Attention to recent frames', help:'Lower = less smear / repeated motion, higher = smoother but stickier.'}},
+  {id:'start-sink', a:'start.image', b:'sink.first frames', kind:'toggle', on:()=>!!S.start && S.start_source==='start',
+     set:v=>v?{start:pick.start||S.refs[0], start_source:'start'}:{start:''}, help:'The sink is built from this image after each reset; then the camera takes over.'},
+  {id:'ref-sink', a:'ref.image', b:'sink.first frames', kind:'toggle', on:()=>!!S.start && S.start_source==='ref',
+     set:v=>v?{start:pick.ref||S.refs[0], start_source:'ref'}:{start:''}, help:'The sink is built from the Reference image node\'s image after each reset.'},
+  {id:'sink-dit', a:'sink.kv', b:'dit.sink', kind:'fixed', w:{...W_ATTN('sink'), cut:true, min:0, label:'sink', title:'Attention to sink', help:'Lower = less anchored to the start, higher = holds the start look harder.'}},
+  {id:'recent-dit', a:'recent.kv', b:'dit.recent', kind:'fixed', w:{...W_ATTN('recent'), cut:true, min:0, label:'recent', title:'Attention to recent frames', help:'Lower = less smear / repeated motion, higher = smoother but stickier.'}},
   {id:'cur-dit', a:'current.kv', b:'dit.current', kind:'fixed', w:{...W_ATTN('current'), label:'current', title:'Attention to current chunk', help:'Higher = leans on the live camera latent.'}},
-  {id:'prompt-dit', a:'prompt.text', b:'dit.prompt', kind:'fixed', w:{key:'attn_text', label:'prompt', get:()=>S.attn.text, min:0, max:3, step:0.05, steer:true,
+  {id:'prompt-dit', a:'prompt.text', b:'dit.prompt', kind:'fixed', w:{key:'attn_text', cut:true, label:'prompt', get:()=>S.attn.text, min:0, max:3, step:0.05, steer:true,
      title:'Prompt strength', help:'Scales the cross-attention (prompt) signal in every block. 0 = ignore the prompt.'}},
-  {id:'vace-dit', a:'vace.hints', b:'dit.vace', kind:'fixed', w:{key:'vace_scale', label:'vace', get:()=>S.vace_scale, min:0, max:2, step:0.05,
+  {id:'vace-dit', a:'vace.hints', b:'dit.vace', kind:'fixed', w:{key:'vace_scale', cut:true, label:'vace', get:()=>S.vace_scale, min:0, max:2, step:0.05,
      title:'Conditioning strength', help:'How hard depth/camera control and the reference steer the model.'}},
   {id:'dit-recent', a:'dit.memory', b:'recent.write', kind:'feedback'},
   {id:'dit-dec', a:'dit.latent', b:'dec.latent', kind:'fixed'},
@@ -218,13 +260,21 @@ function buildNodes() {
     const el = document.createElement('div');
     el.className = 'node k-' + n.k; el.id = 'n-' + id;
     el.innerHTML = `<div class="hd">${n.t}</div><div class="ports"><div class="ins">${(n.ins||[]).map(p=>`<div class="port"><span class="dot" data-port="${id}.${p}"></span>${p}</div>`).join('')}</div>
-      <div class="outs">${(n.outs||[]).map(p=>`<div class="port">${p}<span class="dot" data-port="${id}.${p}"></span></div>`).join('')}</div></div><div class="bd"></div>`;
+      <div class="outs">${(n.outs||[]).map(p=>`<div class="port">${p}<span class="dot" data-port="${id}.${p}"></span></div>`).join('')}</div></div>${id==='cam'?'<img id="campv" class="campv" alt="">':''}<div class="bd"></div>`;
     world.appendChild(el);
     n.el = el;
     place(id);
     el.querySelector('.hd').addEventListener('mousedown', e => startNodeDrag(e, id));
   }
 }
+// Live preview of the frames sent to the model (~6 fps; each request starts when the last image lands)
+function camPreview() {
+  const img = $('campv'); if (!img) return setTimeout(camPreview, 1000);
+  const next = () => setTimeout(camPreview, document.hidden ? 1000 : 150);
+  img.onload = next; img.onerror = () => setTimeout(camPreview, 1000);
+  img.src = '/cam.jpg?t=' + Date.now();
+}
+setTimeout(camPreview, 500);
 function place(id) { const n = NODES[id]; n.el.style.left = n.x + 'px'; n.el.style.top = n.y + 'px'; }
 
 function renderBodies() {
@@ -248,7 +298,7 @@ function curve(p, q) {
   const dx = Math.max(60, Math.abs(q.x - p.x) * 0.5);
   return `M${p.x},${p.y} C${p.x + dx},${p.y} ${q.x - dx},${q.y} ${q.x},${q.y}`;
 }
-function edgeOn(e) { return e.kind !== 'toggle' || e.on(); }
+function edgeOn(e) { return e.kind === 'toggle' ? e.on() : !(e.w && e.w.cut && e.w.get() <= 0); }
 function edgeUsable(e) { return !((e.a.startsWith('depth') || e.b.startsWith('depth')) && !S.depth_available); }
 
 function drawWires() {
@@ -261,7 +311,7 @@ function drawWires() {
     const on = edgeOn(e);
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', d);
-    path.setAttribute('class', e.kind === 'feedback' ? 'feedback' : e.kind === 'fixed' ? 'fixed' : on ? 'on' : 'ghost');
+    path.setAttribute('class', e.kind === 'feedback' ? 'feedback' : !on ? 'ghost' : e.kind === 'fixed' ? 'fixed' : 'on');
     path.addEventListener('click', ev => clickEdge(ev, e));
     wires.appendChild(path);
     if (on && e.kind !== 'feedback') {
@@ -286,27 +336,31 @@ function drawWires() {
 const clamp = (v, a, b) => Math.min(b, Math.max(a, Math.round(v * 100) / 100));
 
 // ---------- edge actions ----------
-function setWeight(e, v) {
+function setWeight(e, v, now) {
   if (e.w.key === 'noise') S.noise = v; else if (e.w.key === 'vace_scale') S.vace_scale = v; else S.attn[e.w.key.slice(5)] = v;
   drawWires();
-  clearTimeout(e._t); e._t = setTimeout(() => post('/params', {[e.w.key]: v}), 150);
+  const body = {[e.w.key]: v};
+  if (e.w.steer && !S.attn_on) body.attn_on = true;  // weights only act with steering on
+  clearTimeout(e._t); e._t = setTimeout(() => setP(body), now ? 0 : 250);
 }
 function toggle(e, v) {
   const body = e.set(v);
   if (!body) { toast(e.id === 'cam-sink' ? 'The sink needs an input: connect the Start image instead.' : 'Not possible'); return; }
-  post('/params', body).then(poll);
+  setP(body);
 }
 function clickEdge(ev, e) {
   ev.stopPropagation();
   const on = edgeOn(e);
   if (e.kind === 'toggle' && !on) { toggle(e, true); return; }
+  if (e.w && e.w.cut && !on) { setWeight(e, 1, true); return; }  // reconnect a cut weight at 1.0
   const pop = $('pop');
   let html = `<h4>${e.w ? e.w.title : e.a.split('.')[0] + ' → ' + e.b.split('.')[0]}</h4><p>${(e.w && e.w.help) || e.help || (e.kind === 'feedback' ? 'Each finished chunk is written back into recent memory.' : 'Always connected in this model.')}</p>`;
   if (e.w) {
     html += `<input type="range" id="pw" min="${e.w.min}" max="${e.w.max}" step="${e.w.step}" value="${e.w.get()}"><div class="muted"><span id="pv">${e.w.get().toFixed(2)}</span>${e.w.steer && !S.attn_on ? ' · steering is off (Denoiser node)' : ''}</div>`;
     if (e.w.steer || e.w.key === 'vace_scale') html += `<button class="sec" id="p1" style="margin-top:8px">Set to 1.0</button> `;
   }
-  if (e.kind === 'toggle') html += `<button id="pd" style="margin-top:8px">Disconnect</button>`;
+  if (e.kind === 'toggle' || (e.w && e.w.cut)) html += `<button id="pd" style="margin-top:8px">Disconnect</button>`;
+  if (e.w || e.kind === 'toggle') html += `<p style="margin-top:8px">${e.kind === 'toggle' ? TAG_R + ' Connecting or disconnecting resets memory automatically.' : TAG_I + ' Applies instantly, memory kept.' + (e.w.cut ? ' Disconnect = weight 0.' : '')}</p>`;
   pop.innerHTML = html;
   pop.style.display = 'block';
   pop.style.left = Math.min(ev.clientX + 10, innerWidth - 280) + 'px';
@@ -314,10 +368,13 @@ function clickEdge(ev, e) {
   const pw = $('pw');
   if (pw) pw.oninput = () => { $('pv').textContent = (+pw.value).toFixed(2); setWeight(e, +pw.value); };
   if ($('p1')) $('p1').onclick = () => { pw.value = 1; $('pv').textContent = '1.00'; setWeight(e, 1); };
-  if ($('pd')) $('pd').onclick = () => { pop.style.display = 'none'; toggle(e, false); };
+  if ($('pd')) $('pd').onclick = () => { pop.style.display = 'none'; e.kind === 'toggle' ? toggle(e, false) : setWeight(e, 0, true); };
 }
 document.addEventListener('mousedown', ev => { if (!$('pop').contains(ev.target) && !ev.target.classList.contains('pill')) $('pop').style.display = 'none'; });
-function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 2600); }
+function toast(msg, kind) {
+  const t = $('toast'); t.textContent = msg; t.className = kind || ''; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', Math.max(2600, msg.length * 45));
+}
 
 // ---------- dragging: nodes, pan, connect ----------
 function startNodeDrag(e, id) {
@@ -346,25 +403,39 @@ viewEl.addEventListener('wheel', e => {
   view.x = e.clientX - (e.clientX - view.x) * k / view.k; view.y = (e.clientY - 52) - ((e.clientY - 52) - view.y) * k / view.k; view.k = k;
   applyView(); drawWires();
 }, {passive: false});
+// connections that can be made from an output (rewirable or cuttable ones)
+const options = from => EDGES.filter(x => x.a === from && edgeUsable(x) && (x.kind === 'toggle' || (x.w && x.w.cut)));
+const edgeName = x => `${NODES[x.a.split('.')[0]].t.replace(/<[^>]+>/g, '')} → ${NODES[x.b.split('.')[0]].t.replace(/<[^>]+>/g, '')}`;
 function startConnect(e, from) {
   e.preventDefault(); e.stopPropagation(); dragging = true;
+  const opts = options(from);
+  if (!opts.length) { dragging = false; toast('This output has no other places it can connect'); return; }
+  document.body.classList.add('connecting');
+  for (const x of opts) {
+    const d = document.querySelector(`.dot[data-port="${CSS.escape(x.b)}"]`);
+    d.classList.add(edgeOn(x) ? 'connected' : 'compat');
+  }
   const p = portPos(from);
   const temp = document.createElementNS('http://www.w3.org/2000/svg', 'path');
   temp.setAttribute('class', 'temp'); wires.appendChild(temp);
   const move = ev => {
     const w = world.getBoundingClientRect();
     temp.setAttribute('d', curve(p, {x: (ev.clientX - w.left) / view.k, y: (ev.clientY - w.top) / view.k}));
-    document.querySelectorAll('.ins .dot').forEach(d => d.classList.toggle('hot', d === ev.target));
+    document.querySelectorAll('.ins .dot.compat').forEach(d => d.classList.toggle('hot', d === ev.target));
   };
   const up = ev => {
     dragging = false; removeEventListener('mousemove', move); removeEventListener('mouseup', up); temp.remove();
-    document.querySelectorAll('.ins .dot.hot').forEach(d => d.classList.remove('hot'));
+    document.body.classList.remove('connecting');
+    document.querySelectorAll('.ins .dot').forEach(d => d.classList.remove('hot', 'compat', 'connected'));
     const dot = ev.target.closest && ev.target.closest('.ins .dot');
     if (!dot) return;
     const e2 = EDGES.find(x => x.a === from && x.b === dot.dataset.port);
     if (!e2 || !edgeUsable(e2)) return toast(`${from.replace('.', ' ')} → ${dot.dataset.port.replace('.', ' ')}: the model has no such input path`);
-    if (e2.kind !== 'toggle' || e2.on()) return toast('Already connected');
-    toggle(e2, true);
+    if (edgeOn(e2)) return toast('Already connected');
+    // an input takes one source: the server swaps it, we say what was replaced
+    const replaced = EDGES.filter(x => x !== e2 && x.b === e2.b && x.kind === 'toggle' && edgeUsable(x) && edgeOn(x));
+    if (replaced.length) setTimeout(() => toast(`↻ ${edgeName(e2)} connected, replacing ${replaced.map(edgeName).join(', ')} (memory reset)`, 'reset'), 400);
+    if (e2.kind === 'toggle') toggle(e2, true); else if (e2.w && e2.w.cut) setWeight(e2, 1, true);
   };
   addEventListener('mousemove', move); addEventListener('mouseup', up);
 }
@@ -372,28 +443,57 @@ function startConnect(e, from) {
 // ---------- node controls ----------
 world.addEventListener('change', e => {
   const act = e.target.dataset.act, v = e.target.value;
-  if (act === 'start-pick') { pick.start = v; if (S.start) post('/params', {start: v}).then(poll); }
-  else if (act === 'ref-pick') { pick.ref = v; if (S.ref.length) post('/params', {ref: v}).then(poll); }
-  else if (act === 'noise-mode') post('/params', {noise_mode: v}).then(poll);
-  else if (act === 'steps') post('/params', {steps: v}).then(poll);
-  else if (act === 'steer') post('/params', {attn_on: e.target.checked}).then(poll);
-  else if (act === 'upscale') post('/params', {upscale: v}).then(poll);
-  else if (act === 'noise-ctl') post('/params', {noise_controller: e.target.checked}).then(poll);
-  else if (act === 'transition') post('/params', {transition_steps: +v}).then(poll);
-  else if (act === 'sink') post('/params', {sink_frames: v}).then(() => { poll(); toast('Sink size changed: memory reset'); });
-  else if (['zoom', 'y_offset', 'sharpen'].includes(act)) e.target.blur();
+  if (act === 'start-pick') { pick.start = v;
+    if (S.start && S.start_source === 'start') setP({start: v, start_source: 'start'});
+    if (S.ref.length && S.ref_source === 'start') setP({ref: v, ref_source: 'start'}); }
+  else if (act === 'ref-pick') { pick.ref = v;
+    if (S.ref.length && S.ref_source === 'ref') setP({ref: v, ref_source: 'ref'});
+    if (S.start && S.start_source === 'ref') setP({start: v, start_source: 'ref'}); }
+  else if (act === 'noise-mode') setP({noise_mode: v});
+  else if (act === 'steps') setP({steps: v});
+  else if (act === 'steer') setP({attn_on: e.target.checked});
+  else if (act === 'upscale') setP({upscale: v});
+  else if (act === 'noise-ctl') setP({noise_controller: e.target.checked});
+  else if (act === 'transition') setP({transition_steps: +v});
+  else if (act === 'sink') setP({sink_frames: v});
+  else if (act === 'sink_refresh') setP({sink_refresh_s: +v});
+  else if (['zoom', 'y_offset', 'sharpen', 'depth_cutoff'].includes(act)) e.target.blur();
   const lk = e.target.dataset.launch;
   if (lk) { L[lk] = e.target.type === 'checkbox' ? (e.target.checked ? '1' : '0') : e.target.value; $('cmd').textContent = launchCmd(); }
 });
 world.addEventListener('input', e => {
   const act = e.target.dataset.act;
-  if (['zoom', 'y_offset', 'sharpen'].includes(act)) {
+  if (['zoom', 'y_offset', 'sharpen', 'depth_cutoff'].includes(act)) {
     const lab = document.querySelector(`[data-val="${act}"]`); if (lab) lab.textContent = (+e.target.value).toFixed(2);
-    clearTimeout(e.target._t); e.target._t = setTimeout(() => post('/params', {[act]: +e.target.value}), 120);
+    clearTimeout(e.target._t); e.target._t = setTimeout(() => setP({[act]: +e.target.value}), 250);
   }
   if (e.target.dataset.launch === 'seed') { L.seed = e.target.value; $('cmd').textContent = launchCmd(); }
 });
+function launchEnv() {
+  const env = {};
+  for (const k of ['SCOPE_KV_FRAMES','SCOPE_FUSED_KV','SCOPE_COMPILE_BLOCKS','SCOPE_COMPILE_TAE','SCOPE_FP8_ROWWISE','SCOPE_NOISE_T_OFFSET','SCOPE_OUTPUT_TARGET_FRAMES']) env[k] = String(L[k] ?? '');
+  env.MODEL = L.MODEL; env.CAMERA_SIZE = L.CAMERA_SIZE; env.NO_AUDIO = '1'; env.ORIENTATION = L.ORIENTATION; env.INPUT_IMAGE = L.INPUT_IMAGE;
+  const ba = [];
+  if (L.size !== '576 320') ba.push('--size ' + L.size);
+  if (L.vae) ba.push('--vae ' + L.vae);
+  if (String(L.seed).trim() !== '') ba.push('--seed ' + parseInt(L.seed));
+  env.BRIDGE_ARGS = ba.join(' ');
+  return env;
+}
+async function restartNow() {
+  if (!confirm('Restart Scope with these launch settings? The output stops for ~40 s.')) return;
+  const r = await post('/restart', {env: launchEnv()}).catch(() => null);
+  if (!r || !r.ok) { toast('✗ Restart not available: restart start_scope.sh once by hand to load the new bridge', 'err'); return; }
+  const o = $('overlay'); o.style.display = 'flex';
+  const t0 = Date.now();
+  await new Promise(r => setTimeout(r, 5000));
+  const wait = setInterval(async () => {
+    $('ovt').textContent = `Restarting… ${Math.round((Date.now() - t0) / 1000)} s (the page reconnects by itself)`;
+    try { const s = await (await fetch('/state')).json(); if (s.fps > 0) { clearInterval(wait); location.reload(); } } catch (e) {}
+  }, 2000);
+}
 world.addEventListener('click', e => {
+  if (e.target.dataset.act === 'restart') restartNow();
   if (e.target.dataset.act === 'copy-cmd') {
     const t = $('cmd').textContent;
     (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast('Command copied'), () => toast('Select the command and copy it'));
@@ -401,7 +501,7 @@ world.addEventListener('click', e => {
 });
 world.addEventListener('keydown', e => {
   if (e.target.dataset.act === 'prompt' && e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault(); post('/params', {prompt: e.target.value}).then(poll); e.target.blur(); toast('Prompt applied');
+    e.preventDefault(); setP({prompt: e.target.value}); e.target.blur();
   }
 });
 
@@ -416,8 +516,10 @@ function bar() {
   if (!ps.options.length) ps.innerHTML = Object.entries(S.presets).sort((a, b) => b[0] - a[0]).map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
   if (document.activeElement !== ps) ps.value = S.preset;
 }
-$('preset').onchange = e => post('/preset/' + e.target.value).then(poll);
-$('refresh').onclick = () => post('/refresh').then(() => toast('Memory reset'));
+$('preset').onchange = e => post('/preset/' + e.target.value).then(() => { poll(); toast('↻ Preset applied, memory reset (your graph overrides stay; use Reset to preset to clear them)', 'reset'); });
+$('resetp').onclick = () => { if (!confirm('Reset every setting in the graph to the preset? (Prompt and reference image are kept.)')) return;
+  post('/reset_overrides').then(r => { if (!r.ok) throw 0; poll(); toast('↻ All settings reset to the preset, memory reset', 'reset'); }).catch(() => toast('✗ Not applied: restart start_scope.sh once to load the new bridge', 'err')); };
+$('refresh').onclick = () => post('/refresh').then(() => toast('↻ Memory reset', 'reset'));
 $('helpb').onclick = () => {
   const t = $('toast');
   t.innerHTML = 'Drag nodes by their title · drag the background to pan · scroll to zoom<br>Drag from an output dot to an input dot to connect · dashed wires are possible connections (click one to connect)<br>Click a wire or weight to change or disconnect it · scroll over a weight to nudge it · RESTART settings build a launch command';
@@ -435,6 +537,32 @@ $('export').onclick = async () => {
   document.body.appendChild(a); a.click(); a.remove();
   $('svm').textContent = 'downloaded ' + name;
 };
+$('loadb').onclick = () => $('loadf').click();
+$('loadf').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  let d; try { d = JSON.parse(await f.text()); } catch (err) { toast('✗ Not a JSON file', 'err'); return; }
+  const r = await (await post('/load', d)).json().catch(() => null);
+  if (!r || !r.ok) { toast('✗ Load failed (restart start_scope.sh once by hand to load the new bridge)', 'err'); return; }
+  const lay = d.graph_layout;
+  if (lay) { for (const id in lay) if (NODES[id]) { NODES[id].x = lay[id].x; NODES[id].y = lay[id].y; place(id); } saveLayout(); }
+  // Launch settings from the file go into the Launch node; Restart applies them
+  if (!L) initLaunch();
+  const ln = r.launch || {}, env = ln.env || {};
+  if (ln.model) L.MODEL = ln.model;
+  if (ln.size) L.size = [...ln.size].sort((a, b) => b - a).join(' ');
+  if ('vae' in ln) L.vae = ln.vae || '';
+  if (ln.seed != null) L.seed = ln.seed;
+  for (const k in env) if (k in L && env[k] != null) L[k] = String(env[k]);
+  if (ln.input_size) L.CAMERA_SIZE = ln.input_size;
+  const lb = NODES.launch.el.querySelector('.bd'); if (lb) lb.innerHTML = NODES.launch.body();
+  await poll();
+  const name = d.name || f.name;
+  if (r.skipped.length) toast(`⚠ Loaded ${name}, but missing image(s): ${r.skipped.join(', ')}`, 'err');
+  else if (r.restart_for.length) toast(`↻ Loaded ${name}. Needs a restart for ${r.restart_for.join(', ')}: Launch node → Restart`, 'ok');
+  else toast(`↻ Loaded ${name} (memory reset). Launch settings are in the Launch node; Restart if they differ`, 'ok');
+  $('svm').textContent = 'loaded ' + f.name;
+};
 $('save').onclick = saveNow; $('svn').onkeydown = e => { if (e.key === 'Enter') saveNow(); };
 
 // ---------- poll ----------
@@ -444,6 +572,7 @@ async function poll() {
     S = await (await fetch('/state')).json();
     if (!built) { buildNodes(); built = true; }
     bar();
+    if (S.output_warning && !window._warned) { window._warned = true; toast('✗ ' + S.output_warning, 'err'); }
     if (!dragging) { renderBodies(); drawWires(); }
   } catch (e) {}
 }
