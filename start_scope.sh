@@ -13,6 +13,8 @@
 #   CAMERA=/dev/video0  CAMERA_SIZE=1280x720
 #   AUDIO_DELAY_MS=350                    delay applied to the AI_Character_Mic virtual mic
 #   NO_AUDIO=1                            skip creating the virtual mic
+#   ORIENTATION=landscape                 16:9 (576x320 -> 1280x720) instead of 9:16 portrait
+#   INPUT_IMAGE=assets/x.png              no camera: animate this still image (also its reference unless CHARACTER_REF set)
 #   BRIDGE_ARGS="--size 640 352 --seed 7"  extra scope_bridge.py arguments (generation size, VAE, seed)
 set -u
 W="$HOME/personal/ai-character-scope"
@@ -113,17 +115,31 @@ echo "[scope] Web UI:  http://localhost:$PORT"
 echo "[scope] Recommended UI settings: StreamDiffusionV2, VAE=tae, 576x320 (portrait), 1 denoising step."
 
 if [ "$BRIDGE" = 1 ]; then
+  EXTRA_ARGS=(); INPUT="${CAMERA:-/dev/video0}"
+  [ "${ORIENTATION:-portrait}" = landscape ] && EXTRA_ARGS+=(--landscape)
+  if [ -n "${INPUT_IMAGE:-}" ]; then INPUT="$INPUT_IMAGE"; CHARACTER_REF="${CHARACTER_REF:-$INPUT_IMAGE}"; fi
   REF_ARGS=(); [ -n "${CHARACTER_REF:-}" ] && read -r -a REFS <<<"$CHARACTER_REF" && REF_ARGS=(--ref "${REFS[@]}")
   taskset -c 6-13 scope/.venv/bin/python tools/scope_bridge.py \
-    --server "http://127.0.0.1:$PORT" --input "${CAMERA:-/dev/video0}" --input-size "${CAMERA_SIZE:-1280x720}" \
+    --server "http://127.0.0.1:$PORT" --input "$INPUT" --input-size "${CAMERA_SIZE:-1280x720}" \
     --output /dev/video10 --preset "${PRESET:-30}" ${NOISE_MODE:+--noise-mode "$NOISE_MODE"} \
     --pipeline "${MODEL:-streamdiffusionv2}" \
     --prompt "${PROMPT:-a stylized 3D animated character, Pixar style render}" \
-    "${REF_ARGS[@]}" ${BRIDGE_ARGS:-} &
+    "${REF_ARGS[@]}" "${EXTRA_ARGS[@]}" ${BRIDGE_ARGS:-} &
   PIDS+=($!)
-  echo "[scope] bridge: ${CAMERA:-/dev/video0} -> Scope (576x320) -> /dev/video10 (AI_Scope_Cam, 720x1280)"
+  echo "[scope] bridge: $INPUT -> Scope (${ORIENTATION:-portrait}) -> /dev/video10 (AI_Scope_Cam)"
   echo "[scope] live controls (FPS, noise, reference, prompt): http://127.0.0.1:8090   (first ~30 s after start are slow while torch.compile warms up)"
 fi
 
 echo "[scope] Ctrl+C to stop."
+if [ "$BRIDGE" = 1 ]; then
+  wait "${PIDS[-1]}"; RC=$?
+  # Exit code 75 = "Restart with these settings" on the graph page: relaunch with the new launch env
+  if [ "$RC" = 75 ] && [ -f "$LOG_DIR/restart.env" ]; then
+    echo "[scope] restarting with new launch settings..."
+    cleanup; trap - EXIT
+    for _ in $(seq 30); do ss -ltn | grep -q ":$PORT " || break; sleep 1; done
+    set -a; source "$LOG_DIR/restart.env"; set +a; rm -f "$LOG_DIR/restart.env"
+    exec "$0" --bridge
+  fi
+fi
 wait "${PIDS[0]}"
