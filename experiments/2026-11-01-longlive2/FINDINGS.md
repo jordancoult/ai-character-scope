@@ -63,6 +63,13 @@ Kernel benchmark at the real shapes (8-frame chunk against 32 frames of KV, 24 h
 
 The wheel is at https://huggingface.co/Kijai/PrecompiledWheels (`sageattention-2.2.0-cp312-cp312-linux_x86_64.whl`), unpacked to `longlive2/.sage2/pkg`.
 
+**The user's verdict on the videos (every 2nd chunk, 1024×576):**
+- **Woman:** exact attention wins. SageAttention 2 gives a foggy-eye effect.
+- **Car:** SageAttention 2 kept the perspective slightly better. The prompt was odd: the car was seen from the front driving backwards.
+- **Decision:** the default for LongLive 2.0 is **exact attention**, with SageAttention 2 as a switch.
+
+**Follow-up:** SageAttention 2 on the first denoising step only (`LL2_SAGE=2first`) runs at 16.8 fps against 15.2 for exact. Videos were sent for the verdict. The rear-view car prompt is "rear view of a glossy red sports car driving away from the camera ...".
+
 ## Bugs and traps found on the way
 - **The text encoder ran on the CPU every chunk.** The pipeline encodes one copy of the prompt per block, so a cache keyed on the whole list never hit. Caching per unique prompt took steady-state speed from 4.4 to 44 fps at 640×352.
 - **The stock T5 loads in float32 (22 GB) and calls `.cuda()`.** The script builds a bf16 copy on the CPU instead.
