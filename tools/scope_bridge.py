@@ -112,7 +112,7 @@ state = {"preset": args.preset, "fps": 0.0, "upscale": None, "noise": args.noise
          # scene placement: the person shrunk to place_scale of the frame at (place_x, place_y); 1 = off
          "place_scale": 1.0, "place_x": 0.5, "place_y": 0.6,
          # person hint: with depth on, pull the person's region toward the camera image (identity) 0..1
-         "person_hint": 0.0, "depth_keep": 0.0,
+         "person_hint": 0.0, "depth_keep": 0.0, "person_seg": False, "place_fade_bottom": 0.12, "place_ground": False,
          "prompt": args.prompt, "ref": [str(Path(r).resolve()) for r in args.ref] if args.ref else []}
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 TMP = Path(__file__).resolve().parents[1] / ".tmp"
@@ -121,7 +121,7 @@ OVERRIDES = {"depth": None, "steps": None, "start": None, "vace_scale": args.vac
              "attn": {"sink": 1.0, "recent": 1.0, "current": 1.0, "text": 1.0}, "attn_on": True,
              "upscale_override": None, "vace_input": False, "sink_frames": None, "noise_controller": False,
              "transition_steps": 0, "zoom": 1.0, "y_offset": 0.0, "sharpen": 0.6, "depth_cutoff": 0.0, "sink_refresh_s": 0.0, "place_scale": 1.0, "place_x": 0.5,
-             "place_y": 0.6, "person_hint": 0.0, "depth_keep": 0.0, "noise": args.noise_scale,
+             "place_y": 0.6, "person_hint": 0.0, "depth_keep": 0.0, "person_seg": False, "place_fade_bottom": 0.12, "place_ground": False, "noise": args.noise_scale,
              "ref_source": "ref", "start_source": "start"}
 _restore = os.environ.pop("SCOPE_BRIDGE_RESTORE", None)
 if _restore and Path(_restore).is_file():
@@ -214,7 +214,8 @@ def preset_params(preset: int, with_ref: bool) -> dict:
         "depth_cutoff": state["depth_cutoff"],
         "sink_refresh_s": state["sink_refresh_s"],
         "place_scale": state["place_scale"], "place_x": state["place_x"], "place_y": state["place_y"],
-        "person_hint": state["person_hint"], "depth_keep": state["depth_keep"],
+        "person_hint": state["person_hint"], "depth_keep": state["depth_keep"], "person_seg": state["person_seg"],
+        "place_fade_bottom": state["place_fade_bottom"], "place_ground": state["place_ground"],
         "vace_use_input_video": state["vace_input"] and not effective_depth(preset),
         "reset_cache": True,
     }
@@ -653,7 +654,8 @@ async def main() -> None:
                  "transition_steps": state["transition_steps"], "zoom": state["zoom"], "y_offset": state["y_offset"],
                  "sharpen": state["sharpen"], "depth_cutoff": state["depth_cutoff"], "sink_refresh_s": state["sink_refresh_s"], "place_scale": state["place_scale"],
                  "place_x": state["place_x"], "place_y": state["place_y"], "person_hint": state["person_hint"],
-                 "depth_keep": state["depth_keep"], "launch": launch_settings(),
+                 "depth_keep": state["depth_keep"], "person_seg": state["person_seg"], "place_fade_bottom": state["place_fade_bottom"], "place_ground": state["place_ground"],
+                 "launch": launch_settings(),
                  "output_warning": state.get("output_warning"),
                  "ref": [Path(r).name for r in state["ref"]],
                  "refs": sorted(f.name for f in ASSETS.glob("*.png"))}))
@@ -732,10 +734,16 @@ async def main() -> None:
                 if "sharpen" in body:
                     state["sharpen"] = max(0.0, min(2.0, float(body["sharpen"])))
                     current_upscaler()
-                for key, lo, hi in (("place_scale", 0.2, 1.0), ("place_x", 0.0, 1.0), ("place_y", 0.0, 1.0), ("person_hint", 0.0, 0.6), ("depth_keep", 0.0, 0.9)):
+                for key, lo, hi in (("place_scale", 0.2, 1.0), ("place_x", 0.0, 1.0), ("place_y", 0.0, 1.0), ("person_hint", 0.0, 0.6), ("depth_keep", 0.0, 0.9), ("place_fade_bottom", 0.0, 0.3)):
                     if key in body:  # scene placement (applies on the next chunk)
                         state[key] = max(lo, min(hi, float(body[key])))
                         update[key] = state[key]
+                if "place_ground" in body:
+                    state["place_ground"] = bool(body["place_ground"])
+                    update["place_ground"] = state["place_ground"]
+                if "person_seg" in body:  # cut out the person (segmentation) for depth + identity hint
+                    state["person_seg"] = bool(body["person_seg"])
+                    update["person_seg"] = state["person_seg"]
                 if "sink_refresh_s" in body:  # keyframe memory: refresh one sink slot every N s (LongLive)
                     state["sink_refresh_s"] = max(0.0, min(60.0, float(body["sink_refresh_s"])))
                     update["sink_refresh_s"] = state["sink_refresh_s"]
