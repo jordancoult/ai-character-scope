@@ -66,6 +66,14 @@ What worked:
 - **Immersed + identity** (no placement, auto body-only 0.35 + hint 0.3 + description) gives the
   clearest identity: the bearded man in the checked shirt stays himself underwater.
 
+**Box fix (`n4_*`, `n6_*`):** a faint box around the actor came from the depth cutoff letting part of
+the room through. **Depth node → Cut out person** uses a segmentation model (DeepLabV3-MobileNet,
+~2 ms/frame) instead: only the person comes through, the outline is feathered, and the cut-out
+fades out before the edges of the placed rectangle. The bottom fade turns the torso into a waterline.
+**Don't use a close-up reference image with placement**, because the model then draws a giant
+close-up behind the small figure. Use no reference (identity from the prompt + hint), or one
+framed small and far away. The "virtual ground" depth gradient (`place_ground`) didn't help.
+
 What failed, and why:
 - **Shrinking the camera image with noise below 1.0:** the gray border survives and becomes a wall
   with a TV-like window. Placement needs noise 1.0.
