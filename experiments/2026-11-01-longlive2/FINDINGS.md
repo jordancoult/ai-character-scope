@@ -70,6 +70,8 @@ The wheel is at https://huggingface.co/Kijai/PrecompiledWheels (`sageattention-2
 
 **Follow-up:** SageAttention 2 on the first denoising step only (`LL2_SAGE=2first`) runs at 16.8 fps against 15.2 for exact. Videos were sent for the verdict. The rear-view car prompt is "rear view of a glossy red sports car driving away from the camera ...".
 
+**Note on the LongLive 1 family in Scope:** Scope's `attention()` has used SageAttention all along: the `sageattention` package is installed in Scope's environment and probed in `wan2_1/modules/sage.py`. The Denoiser's Attention switch offers "default" (that behaviour), exact flash-attention, and Sage on the first step only.
+
 ## Bugs and traps found on the way
 - **The text encoder ran on the CPU every chunk.** The pipeline encodes one copy of the prompt per block, so a cache keyed on the whole list never hit. Caching per unique prompt took steady-state speed from 4.4 to 44 fps at 640×352.
 - **The stock T5 loads in float32 (22 GB) and calls `.cuda()`.** The script builds a bf16 copy on the CPU instead.
