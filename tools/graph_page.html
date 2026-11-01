@@ -9,7 +9,11 @@
           --accent:#ff4d6d; --wire:#7d8cff; --ghost:#55556a; --ok:#3fbf6f; --warn:#f0c03c; --bad:#ff4d4d; }
   * { box-sizing:border-box; }
   html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:13px system-ui, sans-serif; overflow:hidden; }
-  #bar { position:fixed; top:0; left:0; right:0; height:52px; display:flex; align-items:center; gap:14px; padding:0 14px;
+  #stats { position:fixed; top:0; left:0; right:0; height:38px; display:flex; align-items:center; gap:18px; padding:0 14px;
+           background:#15151b; border-bottom:1px solid var(--line); z-index:11; white-space:nowrap; overflow:hidden; }
+  #stats .fps { font-size:20px; font-weight:700; }
+  #stats .t b { font-size:15px; }
+  #bar { position:fixed; top:38px; left:0; right:0; height:52px; display:flex; align-items:center; gap:14px; padding:0 14px;
          background:var(--panel); border-bottom:1px solid var(--line); z-index:10; white-space:nowrap; overflow-x:auto; }
   #bar .fps { font-size:22px; font-weight:700; }
   #bar .t b { font-size:15px; }
@@ -19,7 +23,7 @@
   button.sec { background:#33333f; }
   .muted { color:var(--muted); }
   .z0 { color:var(--ok); } .z1 { color:var(--warn); } .z2 { color:var(--bad); }
-  #view { position:fixed; top:52px; left:0; right:0; bottom:0; cursor:grab; }
+  #view { position:fixed; top:90px; left:0; right:0; bottom:0; cursor:grab; }
   #view.panning { cursor:grabbing; }
   #world { position:absolute; left:0; top:0; transform-origin:0 0; }
   #wires { position:absolute; left:0; top:0; overflow:visible; pointer-events:none; }
@@ -76,9 +80,12 @@
 </style>
 </head>
 <body>
-<div id="bar">
+<div id="stats">
   <span class="fps"><span id="fps">-</span> fps</span>
   <span class="t">GPU <b id="gt">-</b></span><span class="t">CPU <b id="ct">-</b></span>
+  <span class="muted" id="runinfo"></span>
+</div>
+<div id="bar">
   <select id="preset" title="Preset: sets the defaults that the graph overrides"></select>
   <button id="resetp" class="sec" title="Clear every graph override (prompt and reference image are kept)">Reset to preset</button>
   <button id="refresh" class="sec" title="Clear the memory; the sink is rebuilt from what feeds it">Reset memory</button>
@@ -129,8 +136,8 @@ const NODES = {
   ref:     {t:'Reference image', k:'src', x:20, y:600, outs:['image'], body:()=>`<span class="muted">Image${TAG_R}</span><select data-act="ref-pick">${imgOptions((S.ref_source==='ref'&&S.ref[0])||(S.start_source==='ref'&&S.start)||pick.ref)}</select><span class="muted">Encoded once per reset (VACE R2V)</span>`},
   prompt:  {t:'Prompt', k:'src', x:20, y:800, outs:['text'], body:()=>`<textarea data-act="prompt" rows="3"></textarea><span class="muted">Enter applies · ${S.transition_steps ? TAG_I + ' blends in, memory kept' : TAG_R + ' instant change resets memory'}</span>
             <label class="lrow">Blend new prompt over <select data-act="transition" style="width:80px">${[0,2,4,8,16].map(n=>`<option value="${n}" ${S.transition_steps===n?'selected':''}>${n?n+' chunks':'instant'}</option>`).join('')}</select></label>`},
-  depth:   {t:'Depth', k:'cond', x:300, y:20, ins:['frames'], outs:['depth'], body:()=> S.depth_available ? `<label class="lrow">Compute depth <select data-act="depth-stride">${[[1,'every frame'],[2,'every 2 frames'],[4,'every 4 frames (default)'],[12,'once per chunk (old, jerky)']].map(([v,l])=>`<option value="${v}" ${(S.depth_stride||4)==v?'selected':''}>${l}</option>`).join('')}</select></label>${slider('depth_cutoff', 'Body only (drop background)', S.depth_cutoff || 0, 0, 0.9, 0.05)}<span class="muted">0 = full scene depth. ~0.5 keeps just you; the model invents the rest</span><label class="lrow">Cut out person (no box edges)${TAG_I} <input type="checkbox" data-act="person-seg" ${S.person_seg?'checked':''}></label>${slider('depth_keep', 'Auto body-only: keep nearest fraction (0 = use cutoff)', S.depth_keep || 0, 0, 0.9, 0.05)}${slider('person_hint', 'Identity hint (your colours inside your outline)', S.person_hint || 0, 0, 0.6, 0.02)}` : `<span class="muted">Not available</span>`},
-  enc:     {t:'VAE encode', k:'cond', x:300, y:190, ins:['frames'], outs:['latent'], body:()=>`<span class="muted">${S.pipeline==='longlive'?'lighttae':'tae'} · 4 frames → 1 latent frame</span>`},
+  depth:   {t:'Depth', k:'cond', x:300, y:20, ins:['frames'], outs:['depth'], body:()=> S.depth_available ? `<label class="lrow">Compute depth <select data-act="depth-stride">${[[1,'every frame'],[2,'every 2 frames'],[4,'every 4 frames (default)'],[12,'once per chunk (old, jerky)']].map(([v,l])=>`<option value="${v}" ${(S.depth_stride||4)==v?'selected':''}>${l}</option>`).join('')}</select></label>${slider('depth_cutoff', 'Body only (drop background)', S.depth_cutoff || 0, 0, 0.9, 0.05)}<span class="muted">0 = full scene depth. ~0.5 keeps just you; the model invents the rest</span><label class="lrow">Cut out person (no box edges)${TAG_I} <input type="checkbox" data-act="person-seg" ${S.person_seg?'checked':''}></label>${slider('depth_keep', 'Auto body-only: keep nearest fraction (0 = use cutoff)', S.depth_keep || 0, 0, 0.9, 0.05)}${slider('person_hint', 'Identity hint (your colours inside your outline)', S.person_hint || 0, 0, 0.9, 0.02)}` : `<span class="muted">Not available</span>`},
+  enc:     {t:'VAE encode', k:'cond', x:300, y:190, ins:['frames'], outs:['latent'], body:()=>`<span class="muted">${S.pipeline!=='streamdiffusionv2'?'lighttae':'tae'} · 4 frames → 1 latent frame</span>`},
   noise:   {t:'Noise', k:'cond', x:300, y:330, outs:['noise'], body:()=>`<span class="muted">Pattern${TAG_I}</span><select data-act="noise-mode">${['auto','fixed','random'].map(m=>`<option ${S.noise_mode===m?'selected':''}>${m}</option>`).join('')}</select><span class="muted">Pattern now: ${S.noise_pattern}</span>
             <label><input type="checkbox" data-act="noise-ctl" ${S.noise_controller?'checked':''}> motion-adaptive level${TAG_I}</label>
             ${slider('feedback', 'Feedback: start from the last output (0 = off)', S.feedback || 0, 0, 1, 0.05)}<span class="muted">Each chunk refines the previous result instead of restarting from the camera. Feedback 1 = no camera at all. Noise = how much is reinvented each chunk (variety vs. polish)</span>
@@ -138,7 +145,7 @@ const NODES = {
   vace:    {t:'VACE', k:'cond', x:580, y:30, ins:['control','reference'], outs:['hints'], body:()=>`<span class="muted">Turns depth/camera and the reference into hints added inside the model</span>`},
   sink:    {t:'Memory: sink', k:'mem', x:580, y:215, ins:['first frames'], outs:['kv'], body:()=>`<span class="muted">First frames after a reset; never evicted</span>
             <label class="lrow">Sink size${TAG_R} <select data-act="sink" style="width:110px"><option value="">default (3)</option>${Array.from({length:S.sink_max+1},(_, i)=>`<option ${S.sink_frames===i?'selected':''}>${i}</option>`).join('')}</select></label>
-            <span class="muted">latent frames (of ${S.pipeline==='longlive'?12:6} in memory)</span>
+            <span class="muted">latent frames (of ${({longlive:12, memflow:12, 'reward-forcing':9})[S.pipeline] || 6} in memory)</span>
             ${S.pipeline==='longlive' ? `<label class="lrow">Keyframe memory${TAG_I} <select data-act="sink_refresh" style="width:110px">${[[0,'off'],[4,'every 4 s'],[7,'every 7 s'],[10,'every 10 s'],[15,'every 15 s']].map(([v,l])=>`<option value="${v}" ${(+S.sink_refresh_s||0)===v?'selected':''}>${l}</option>`).join('')}</select></label><span class="muted">Copies a fresh frame into one sink slot at a time, so memory spans ~slots × interval seconds</span>` : ''}`},
   current: {t:'Memory: current', k:'mem', x:580, y:420, ins:['latent','noise'], outs:['kv'], body:()=>`<span class="muted">The chunk being generated: noisy camera latent</span>`},
   recent:  {t:'Memory: recent', k:'mem', x:580, y:600, ins:['write'], outs:['kv'], body:()=>`<span class="muted">Rolling window of previous chunks</span>`},
@@ -170,8 +177,8 @@ const sel = (key, opts) => `<select data-launch="${key}">${opts.map(([v, l]) => 
 const chk = (key) => `<input type="checkbox" data-launch="${key}" ${L[key]==='1'?'checked':''}>`;
 function launchBody() {
   if (!L) initLaunch();
-  const kvDef = S.pipeline === 'longlive' ? 12 : 6;
-  return `<div class="lrow">Model ${sel('MODEL', [['streamdiffusionv2','StreamDiffusionV2'],['longlive','LongLive']])}</div>
+  const kvDef = ({longlive:12, memflow:12, 'reward-forcing':9})[S.pipeline] || 6;
+  return `<div class="lrow">Model ${sel('MODEL', [['streamdiffusionv2','StreamDiffusionV2'],['longlive','LongLive'],['reward-forcing','Reward Forcing (new)'],['memflow','MemFlow (new)']])}</div>
   <div class="lrow">Orientation ${sel('ORIENTATION', [['portrait','Portrait 9:16'],['landscape','Landscape 16:9']])}</div>
   <div class="lrow">Input ${sel('INPUT_IMAGE', [['','Camera'], ...(S.refs||[]).map(f=>['assets/'+f, 'Animate image: '+f])])}</div>
   <div class="lrow">Generation size ${sel('size', [['512 288','288×512'],['576 320','320×576'],['640 352','352×640']])}</div>
@@ -404,7 +411,7 @@ viewEl.addEventListener('wheel', e => {
   if (e.target.closest('.bd')) return;
   e.preventDefault();
   const k = Math.min(1.6, Math.max(0.4, view.k * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
-  view.x = e.clientX - (e.clientX - view.x) * k / view.k; view.y = (e.clientY - 52) - ((e.clientY - 52) - view.y) * k / view.k; view.k = k;
+  view.x = e.clientX - (e.clientX - view.x) * k / view.k; view.y = (e.clientY - 90) - ((e.clientY - 90) - view.y) * k / view.k; view.k = k;
   applyView(); drawWires();
 }, {passive: false});
 // connections that can be made from an output (rewirable or cuttable ones)
@@ -519,6 +526,8 @@ function bar() {
   const g = $('gt'), c = $('ct');
   g.textContent = S.gpu_temp == null ? '-' : S.gpu_temp + '°C'; g.className = S.gpu_thermal_throttle ? 'z1' : zone(S.gpu_temp, [87, 92]);
   c.textContent = S.cpu_temp == null ? '-' : S.cpu_temp + '°C'; c.className = zone(S.cpu_temp, [100, 110]);
+  const ln = S.launch || {};
+  $('runinfo').textContent = [ln.model, ln.size ? [...ln.size].sort((a, b) => b - a).join('×') : ''].filter(Boolean).join(' · ');
   const ps = $('preset');
   if (!ps.options.length) ps.innerHTML = Object.entries(S.presets).sort((a, b) => b[0] - a[0]).map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
   if (document.activeElement !== ps) ps.value = S.preset;

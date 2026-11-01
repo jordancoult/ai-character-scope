@@ -8,7 +8,7 @@
 #   CHARACTER_REF="a.png [b.png]"         reference image(s) for VACE (omit for prompt-only)
 #   PROMPT="..."                          text prompt describing the character
 #   PRESET=30|24|20|15                    starting FPS preset (change live on the slider page)
-#   MODEL=streamdiffusionv2|longlive      model (default streamdiffusionv2; longlive = experimental, no depth presets)
+#   MODEL=streamdiffusionv2|longlive|reward-forcing|memflow   model (default streamdiffusionv2; the others are LongLive-family)
 #   NOISE_MODE=fixed|random|auto          per-chunk noise pattern (default fixed; auto = preset choice; also on the page)
 #   CAMERA=/dev/video0  CAMERA_SIZE=1280x720
 #   AUDIO_DELAY_MS=350                    delay applied to the AI_Character_Mic virtual mic
@@ -80,7 +80,7 @@ export SCOPE_COMPILE_BLOCKS="${SCOPE_COMPILE_BLOCKS:-1}"
 # Fold the clean-KV refresh into the next chunk's forward (one DiT pass per chunk instead of two)
 export SCOPE_FUSED_KV="${SCOPE_FUSED_KV:-1}"
 # LongLive shares the denoise/clean-KV blocks but its model has no fused-prefix support
-[ "${MODEL:-streamdiffusionv2}" = longlive ] && export SCOPE_FUSED_KV=0
+case "${MODEL:-streamdiffusionv2}" in longlive|reward-forcing|memflow) export SCOPE_FUSED_KV=0 ;; esac
 export SCOPE_COMPILE_TAE="${SCOPE_COMPILE_TAE:-1}"
 # Tell the model the true noise level (stock Scope says 100 less): removes residual-noise sparkles,
 # 1-step realism 0.50 -> 0.75; LongLive is unusable without it. 100 = stock behavior.

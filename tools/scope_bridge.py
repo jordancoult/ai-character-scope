@@ -61,7 +61,9 @@ parser.add_argument("--prompt", default="a stylized 3D animated character, Pixar
 parser.add_argument("--ref", nargs="+", default=None, help="Character reference image(s) (VACE)")
 parser.add_argument("--vace-scale", type=float, default=1.0)
 parser.add_argument("--noise-scale", type=float, default=None, help="Default 0.75 (0.9 for longlive, which follows the camera more)")
-parser.add_argument("--pipeline", default="streamdiffusionv2", choices=["streamdiffusionv2", "longlive"],
+# LongLive-family pipelines (Wan2.1 1.3B causal, 3-latent chunks, frame sink): same bridge behaviour
+LL_FAMILY = ("longlive", "reward-forcing", "memflow")
+parser.add_argument("--pipeline", default="streamdiffusionv2", choices=["streamdiffusionv2", "longlive", "reward-forcing", "memflow"],
                     help="longlive = experimental: trained for long streams (frame sink + KV recache), "
                          "3 latent frames per chunk, no depth presets, no Blackwell speed patches")
 parser.add_argument("--vae", default=None, choices=["tae", "lighttae", "wan", "lightvae"],
@@ -87,9 +89,9 @@ if IMAGE_INPUT and args.noise_scale is None:
 if IMAGE_INPUT and args.noise_mode is None:
     args.noise_mode = "random"  # fresh noise each chunk is what animates a still input
 if args.noise_scale is None:
-    args.noise_scale = 0.9 if args.pipeline == "longlive" else 0.75
+    args.noise_scale = 0.9 if args.pipeline in LL_FAMILY else 0.75
 if args.noise_mode is None:
-    args.noise_mode = "random" if args.pipeline == "longlive" else "fixed"
+    args.noise_mode = "random" if args.pipeline in LL_FAMILY else "fixed"
 
 H, W = args.size
 OH, OW = args.out_size
@@ -174,7 +176,7 @@ def effective_steps(preset: int) -> list[int]:
     return STEP_LISTS[state["steps"]] if state["steps"] else (args.steps or PRESETS[preset]["steps"])
 
 
-SINK_MAX = 10 if args.pipeline == "longlive" else 4  # must stay below the KV window (12 / 6 latent frames)
+SINK_MAX = {"longlive": 10, "memflow": 10, "reward-forcing": 7}.get(args.pipeline, 4)  # below the KV window (12 / 9 / 6 latent frames)
 LAUNCH_ENV = ["MODEL", "PRESET", "NOISE_MODE", "CAMERA", "CAMERA_SIZE", "SCOPE_FUSED_KV", "SCOPE_COMPILE_BLOCKS",
               "SCOPE_COMPILE_TAE", "SCOPE_FP8_ROWWISE", "SCOPE_KV_FRAMES", "SCOPE_NOISE_T_OFFSET",
               "SCOPE_OUTPUT_TARGET_FRAMES", "SCOPE_SINK_QUEUE_MAX", "SCOPE_INPUT_QUEUE_MAX", "SCOPE_PRELOAD_DEPTH",
@@ -186,7 +188,7 @@ restart_requested = {"yes": False}
 def launch_settings() -> dict:
     """Settings that only change on restart: start_scope.sh env vars and bridge load arguments."""
     return {"env": {k: os.environ.get(k) for k in LAUNCH_ENV}, "model": args.pipeline, "size": [H, W],
-            "vae": args.vae or ("lighttae" if args.pipeline == "longlive" else "tae"), "seed": args.seed,
+            "vae": args.vae or ("lighttae" if args.pipeline in LL_FAMILY else "tae"), "seed": args.seed,
             "input_size": args.input_size}
 
 
@@ -256,7 +258,7 @@ async def poll_temps() -> None:
 
 async def load_pipeline(client: httpx.AsyncClient) -> None:
     # LongLive expects normalized latents: lighttae (tae is raw, only right for our StreamDiffusionV2 patch)
-    vae = args.vae or ("lighttae" if args.pipeline == "longlive" else "tae")
+    vae = args.vae or ("lighttae" if args.pipeline in LL_FAMILY else "tae")
     load_params = {"height": H, "width": W, "vae_type": vae, "vace_enabled": True}  # always: depth presets need VACE even without a ref
     if args.seed is not None:
         load_params["base_seed"] = args.seed
@@ -648,7 +650,7 @@ async def main() -> None:
                 {"preset": state["preset"], "fps": state["fps"], "upscale": state["upscale"],
                  "gpu_temp": state["gpu_temp"], "gpu_watts": state["gpu_watts"], "cpu_temp": state["cpu_temp"],
                  "gpu_thermal_throttle": state["gpu_thermal_throttle"],
-                 "label": ("[LongLive] " if args.pipeline == "longlive" else "") + PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
+                 "label": ({"longlive": "[LongLive] ", "reward-forcing": "[RewardForcing] ", "memflow": "[MemFlow] "}.get(args.pipeline, "")) + PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
                  "fixed_noise": fixed_noise(state["preset"]), "prompt": state["prompt"],
                  "depth": state["depth"], "depth_on": effective_depth(state["preset"]),
                  "depth_available": True,  # LongLive gained depth_vace on the node-graph branch
@@ -744,7 +746,7 @@ async def main() -> None:
                 if "sharpen" in body:
                     state["sharpen"] = max(0.0, min(2.0, float(body["sharpen"])))
                     current_upscaler()
-                for key, lo, hi in (("place_scale", 0.2, 1.0), ("place_x", 0.0, 1.0), ("place_y", 0.0, 1.0), ("person_hint", 0.0, 0.6), ("depth_keep", 0.0, 0.9), ("place_fade_bottom", 0.0, 0.3), ("feedback", 0.0, 1.0), ("feedback_motion", 0.0, 1.5)):
+                for key, lo, hi in (("place_scale", 0.2, 1.0), ("place_x", 0.0, 1.0), ("place_y", 0.0, 1.0), ("person_hint", 0.0, 0.9), ("depth_keep", 0.0, 0.9), ("place_fade_bottom", 0.0, 0.3), ("feedback", 0.0, 1.0), ("feedback_motion", 0.0, 1.5)):
                     if key in body:  # scene placement (applies on the next chunk)
                         state[key] = max(lo, min(hi, float(body[key])))
                         update[key] = state[key]
@@ -844,6 +846,11 @@ async def main() -> None:
                     launch = {"model": d.get("model"), "size": d.get("size"), "vae": d.get("vae")}
                     src = {k: v for k, v in src.items() if v is not None or k in ("depth", "steps", "start", "upscale_override")}
                 skipped = []
+                # Start from defaults so a file saved before a setting existed (e.g. feedback, placement)
+                # gets that setting's default, not whatever was loaded or tweaked last.
+                for k, v in OVERRIDES.items():
+                    state[k] = json.loads(json.dumps(v))
+                state["noise_mode"] = args.noise_mode
                 for k in list(OVERRIDES) + ["noise_mode", "prompt"]:
                     if k in src:
                         state[k] = json.loads(json.dumps(src[k]))
