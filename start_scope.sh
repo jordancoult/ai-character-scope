@@ -86,9 +86,16 @@ export SCOPE_COMPILE_TAE="${SCOPE_COMPILE_TAE:-1}"
 # 1-step realism 0.50 -> 0.75; LongLive is unusable without it. 100 = stock behavior.
 export SCOPE_NOISE_T_OFFSET="${SCOPE_NOISE_T_OFFSET:-0}"
 export SCOPE_PRELOAD_DEPTH="${SCOPE_PRELOAD_DEPTH:-1}"
-# Latency: keep only a 3-frame cushion in the output queue (1.34 s -> 0.46 s, no added stutter)
-export SCOPE_OUTPUT_TARGET_FRAMES="${SCOPE_OUTPUT_TARGET_FRAMES:-3}"
-export SCOPE_SINK_QUEUE_MAX="${SCOPE_SINK_QUEUE_MAX:-12}"
+# Latency: keep only a small cushion in the output queue (1.34 s -> 0.46 s on StreamDiffusionV2).
+# LongLive-family models deliver 12-frame bursts (one chunk), so their cushion must cover a whole
+# chunk: with 3, every burst counted as backlog and was played up to 45% fast, then the output
+# stalled until the next chunk (a hitch every ~0.6 s). The output queue also holds two chunks there.
+case "${MODEL:-streamdiffusionv2}" in
+  longlive|reward-forcing|memflow) OUT_TARGET_DEFAULT=14; SINK_MAX_DEFAULT=24 ;;
+  *) OUT_TARGET_DEFAULT=3; SINK_MAX_DEFAULT=12 ;;
+esac
+export SCOPE_OUTPUT_TARGET_FRAMES="${SCOPE_OUTPUT_TARGET_FRAMES:-$OUT_TARGET_DEFAULT}"
+export SCOPE_SINK_QUEUE_MAX="${SCOPE_SINK_QUEUE_MAX:-$SINK_MAX_DEFAULT}"
 # Input side: keep at most 2 chunks of camera frames, dropping the oldest when the model is slower
 export SCOPE_INPUT_QUEUE_MAX="${SCOPE_INPUT_QUEUE_MAX:-8}"
 # SCOPE_KV_FRAMES=3 is ~10% faster but follows the camera framing less (see README); stock 6 kept.
