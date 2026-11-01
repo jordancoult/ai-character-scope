@@ -41,6 +41,28 @@ Measured at 2 steps, KV in NVFP4 and the TAE decoder unless noted:
 | 1024×576 | skipped | 16 | 19.7 | 9.1 GB | blobs appear |
 | 960×544 | skipped | 24 | 20.3 | 9.4 GB | the user saw artifacts (random candles) (`s960.jpg`) |
 
+### Attention (attention is 48% of the time at 1024×576)
+Kernel benchmark at the real shapes (8-frame chunk against 32 frames of KV, 24 heads × 128), `tools/longlive2/attn_bench.py`:
+
+| Kernel | Time | Accuracy (cosine) |
+|---|---|---|
+| flash-attn 2 (stock) | 16.1 ms | 0.999997 |
+| PyTorch cuDNN / flash / memory-efficient | 16.3 / 17.3 / 38.0 ms | 0.999997 |
+| SageAttention v1 (Triton) | 11.5 ms | 0.99991 (damages the image end-to-end) |
+| **SageAttention 2.2, int8 QK + fp8 PV** (Kijai's prebuilt wheel, sm_120) | **7.8 ms** | 0.99924 on random data |
+
+**End to end, SageAttention 2 doesn't produce v1's neon or face damage.** At 1024×576, window 24, compiled, `LL2_SAGE=2`:
+
+| Clean pass | Attention | fps | Notes |
+|---|---|---|---|
+| every 3rd | exact | 16.0 | the user saw a floating hand: rejected |
+| every 3rd | SageAttention 2 | 21.1 | a glass object grows in |
+| every 3rd | SageAttention 2, first step only (`LL2_SAGE=2first`) | 17.8 | a glass pitcher grows in |
+| **every 2nd** | exact | 15.2 | consistent (the user's choice for the clean pass) |
+| **every 2nd** | **SageAttention 2** | **19.9** | consistent, same woman and room; a makeup brush appears (`sage2_every2_cmp.jpg`). Waiting for the user's verdict. |
+
+The wheel is at https://huggingface.co/Kijai/PrecompiledWheels (`sageattention-2.2.0-cp312-cp312-linux_x86_64.whl`), unpacked to `longlive2/.sage2/pkg`.
+
 ## Bugs and traps found on the way
 - **The text encoder ran on the CPU every chunk.** The pipeline encodes one copy of the prompt per block, so a cache keyed on the whole list never hit. Caching per unique prompt took steady-state speed from 4.4 to 44 fps at 640×352.
 - **The stock T5 loads in float32 (22 GB) and calls `.cuda()`.** The script builds a bf16 copy on the CPU instead.
