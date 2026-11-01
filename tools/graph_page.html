@@ -122,12 +122,14 @@ let dragging = false;
 // ---------- nodes ----------
 const NODES = {
   cam:     {t:'Camera', k:'src', x:20, y:40, outs:['frames'], body:()=>`<span class="muted">Preview: exactly what the model receives</span>
-            ${slider('zoom', 'Zoom', S.zoom, 1, 3, 0.05)}${slider('y_offset', 'Frame up / down', S.y_offset, -1, 1, 0.05)}`},
+            ${slider('zoom', 'Zoom', S.zoom, 1, 3, 0.05)}${slider('y_offset', 'Frame up / down', S.y_offset, -1, 1, 0.05)}
+            <span class="muted"><b>Place in scene</b>: shrink yourself into the generated world (1 = off)</span>
+            ${slider('place_scale', 'Size', S.place_scale ?? 1, 0.2, 1, 0.05)}${slider('place_x', 'Left / right', S.place_x ?? 0.5, 0, 1, 0.05)}${slider('place_y', 'Up / down', S.place_y ?? 0.6, 0, 1, 0.05)}`},
   start:   {t:'Start image', k:'src', x:20, y:400, outs:['image'], body:()=>`<span class="muted">Image${TAG_R}</span><select data-act="start-pick">${imgOptions((S.start_source==='start'&&S.start)||(S.ref_source==='start'&&S.ref[0])||pick.start)}</select><span class="muted">Shown for ~0.8 s after a reset to seed the sink</span>`},
   ref:     {t:'Reference image', k:'src', x:20, y:600, outs:['image'], body:()=>`<span class="muted">Image${TAG_R}</span><select data-act="ref-pick">${imgOptions((S.ref_source==='ref'&&S.ref[0])||(S.start_source==='ref'&&S.start)||pick.ref)}</select><span class="muted">Encoded once per reset (VACE R2V)</span>`},
   prompt:  {t:'Prompt', k:'src', x:20, y:800, outs:['text'], body:()=>`<textarea data-act="prompt" rows="3"></textarea><span class="muted">Enter applies · ${S.transition_steps ? TAG_I + ' blends in, memory kept' : TAG_R + ' instant change resets memory'}</span>
             <label class="lrow">Blend new prompt over <select data-act="transition" style="width:80px">${[0,2,4,8,16].map(n=>`<option value="${n}" ${S.transition_steps===n?'selected':''}>${n?n+' chunks':'instant'}</option>`).join('')}</select></label>`},
-  depth:   {t:'Depth', k:'cond', x:300, y:20, ins:['frames'], outs:['depth'], body:()=> S.depth_available ? `<span class="muted">Video Depth Anything, every chunk</span>${slider('depth_cutoff', 'Body only (drop background)', S.depth_cutoff || 0, 0, 0.9, 0.05)}<span class="muted">0 = full scene depth. ~0.5 keeps just you; the model invents the rest</span>` : `<span class="muted">Not available</span>`},
+  depth:   {t:'Depth', k:'cond', x:300, y:20, ins:['frames'], outs:['depth'], body:()=> S.depth_available ? `<span class="muted">Video Depth Anything, every chunk</span>${slider('depth_cutoff', 'Body only (drop background)', S.depth_cutoff || 0, 0, 0.9, 0.05)}<span class="muted">0 = full scene depth. ~0.5 keeps just you; the model invents the rest</span>${slider('depth_keep', 'Auto body-only: keep nearest fraction (0 = use cutoff)', S.depth_keep || 0, 0, 0.9, 0.05)}${slider('person_hint', 'Identity hint (your colours inside your outline)', S.person_hint || 0, 0, 0.6, 0.02)}` : `<span class="muted">Not available</span>`},
   enc:     {t:'VAE encode', k:'cond', x:300, y:190, ins:['frames'], outs:['latent'], body:()=>`<span class="muted">${S.pipeline==='longlive'?'lighttae':'tae'} · 4 frames → 1 latent frame</span>`},
   noise:   {t:'Noise', k:'cond', x:300, y:330, outs:['noise'], body:()=>`<span class="muted">Pattern${TAG_I}</span><select data-act="noise-mode">${['auto','fixed','random'].map(m=>`<option ${S.noise_mode===m?'selected':''}>${m}</option>`).join('')}</select><span class="muted">Pattern now: ${S.noise_pattern}</span>
             <label><input type="checkbox" data-act="noise-ctl" ${S.noise_controller?'checked':''}> motion-adaptive level${TAG_I}</label>`},
@@ -457,13 +459,13 @@ world.addEventListener('change', e => {
   else if (act === 'transition') setP({transition_steps: +v});
   else if (act === 'sink') setP({sink_frames: v});
   else if (act === 'sink_refresh') setP({sink_refresh_s: +v});
-  else if (['zoom', 'y_offset', 'sharpen', 'depth_cutoff'].includes(act)) e.target.blur();
+  else if (['zoom', 'y_offset', 'sharpen', 'depth_cutoff', 'place_scale', 'place_x', 'place_y', 'person_hint', 'depth_keep'].includes(act)) e.target.blur();
   const lk = e.target.dataset.launch;
   if (lk) { L[lk] = e.target.type === 'checkbox' ? (e.target.checked ? '1' : '0') : e.target.value; $('cmd').textContent = launchCmd(); }
 });
 world.addEventListener('input', e => {
   const act = e.target.dataset.act;
-  if (['zoom', 'y_offset', 'sharpen', 'depth_cutoff'].includes(act)) {
+  if (['zoom', 'y_offset', 'sharpen', 'depth_cutoff', 'place_scale', 'place_x', 'place_y', 'person_hint', 'depth_keep'].includes(act)) {
     const lab = document.querySelector(`[data-val="${act}"]`); if (lab) lab.textContent = (+e.target.value).toFixed(2);
     clearTimeout(e.target._t); e.target._t = setTimeout(() => setP({[act]: +e.target.value}), 250);
   }
