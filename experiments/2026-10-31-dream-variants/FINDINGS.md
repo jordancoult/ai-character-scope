@@ -44,6 +44,39 @@ and `assets/webcam_5941016.mp4`, both from Pexels.
   Use it for close-ups only.
 - Slow desk gestures show much less ghosting than the boxer's punches. Depth modes run at ~18 fps.
 
+## Deep scene: you farther back, still doing your motions (`deep-scene/` clips)
+
+These are new controls, all off by default, so the presets above behave as before.
+- **Camera node → Place in scene** (size, left/right, up/down) shrinks your depth map into the frame.
+  The surroundings become "unknown", so the model builds the world around a smaller you.
+- **Depth node → Identity hint** (0–0.6): inside your outline, the latents are pulled toward your real
+  camera colors and everywhere else stays pure noise. That keeps your clothes, glasses and hair
+  while the world is invented. 0.3 works well.
+- **Depth node → Auto body-only:** keeps the nearest fraction of the image (0.35 for a person at a desk)
+  whatever the room depth is. It's reliable *without* placement; with placement, use the fixed cutoff.
+
+What worked:
+- **50% size + body-only cutoff 0.25 + identity hint 0.3 + a self-description in the prompt**
+  (`r0_A_p50_desc_640`). This gives a consistent person (suit, pink shirt, glasses) floating
+  deep in the underwater scene, with gestures followed, at ~18 fps. Without the self-description
+  the face drifted to a different gender, because LongLive's reference image is weak. **The prompt is the
+  main identity lever**: describe yourself in it.
+- **At 768×432** (`--size 768 432`) the small subject is crisper and 40% size also works, but it runs
+  at ~11 fps and uses 15 of the 16 GB of GPU memory. 832×480 runs out of memory.
+- **Immersed + identity** (no placement, auto body-only 0.35 + hint 0.3 + description) gives the
+  clearest identity: the bearded man in the checked shirt stays himself underwater.
+
+What failed, and why:
+- **Shrinking the camera image with noise below 1.0:** the gray border survives and becomes a wall
+  with a TV-like window. Placement needs noise 1.0.
+- **A mask that covers only the face and hands** (adaptive cutoff + placement, or 35% size) makes the model
+  draw a giant close-up. The mask has to cover the whole upper body.
+- **Pushing the placed depth into the far range** made close-ups worse, so it was reverted.
+- Rooms with a desk or glass wall close to the camera can leave a box outline at cutoff 0.25. Raise
+  the cutoff until it disappears.
+- **Mouth detail at 50% size** is limited: the face is ~40 px tall at 640×352. Expressions read
+  broadly, but lip-sync detail needs a bigger size (0.6+) or the 768 resolution.
+
 ## Dials and what they do
 
 - **Noise** (now up to 1.0):
