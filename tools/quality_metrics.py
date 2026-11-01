@@ -94,7 +94,7 @@ def adherence_series(x_in, x_out):
     from scope.core.pipelines.video_depth_anything.gpu_depth import GpuStreamingDepth
 
     def depth(x):
-        m, ds = GpuStreamingDepth(frames_per_chunk=4), []
+        m, ds = GpuStreamingDepth(stride=1), []
         for i in range(0, x.shape[0] - 3, 4):
             chunk = (x[i : i + 4].to(DEV).float() / 255 * 2 - 1).permute(1, 0, 2, 3).unsqueeze(0).to(torch.bfloat16)
             ds.append(F.avg_pool2d(m(chunk)[0, 0].float().unsqueeze(1), 8).squeeze(1))

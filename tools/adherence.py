@@ -26,7 +26,7 @@ def frames(path, size):
 
 
 def depth_of(x):
-    model = GpuStreamingDepth(frames_per_chunk=4)
+    model = GpuStreamingDepth(stride=1)
     ds = []
     for i in range(0, x.shape[0] - 3, 4):
         chunk = (x[i : i + 4] * 2 - 1).permute(1, 0, 2, 3).unsqueeze(0).to(torch.bfloat16)
