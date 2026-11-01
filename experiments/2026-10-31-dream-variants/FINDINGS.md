@@ -28,6 +28,22 @@ them with **Load…** on the graph page.
 | `claude_dream_world_with_body` | depth on, noise 1.0, sink 0 | A prompt world shaped by your depth, including the room layout, that keeps shifting like "many worlds" | ~17 |
 | `claude_creature_body-only_face` | depth on, body-only **0.5**, noise 1.0, sink 3 | Face close-ups reinvented as a creature, with expressions still followed | ~17 |
 
+## Webcam-style check (`w*.mp4` clips)
+
+Two stock clips of a person at a desk, talking and gesturing at the camera: `assets/webcam_7643311.mp4`
+and `assets/webcam_5941016.mp4`, both from Pexels.
+- **Your "many worlds (interactive)" (noise 0.85, no depth)** mostly copies the room and suit with a
+  watery tint at ~23.7 fps. With a full desk scene in view, 0.85 noise keeps the camera image dominant.
+- **Immersed body** looks the most different: the person is underwater with floating hair, and hand
+  gestures (hands to face, clasped hands) are tracked. The identity is reinvented, sometimes as a
+  different gender, because only depth carries over.
+- **Realistic face** is very photoreal, with gestures and face-touching followed well. But the room
+  stays (noise 0.9 keeps the scene), so the prompt mostly changes the details.
+- **Dream world with body** sits in the middle: an underwater set and a restyled person, with gestures followed.
+- **Creature (body-only 0.5)** does little at desk framing, because the cutoff still keeps the whole upper body.
+  Use it for close-ups only.
+- Slow desk gestures show much less ghosting than the boxer's punches. Depth modes run at ~18 fps.
+
 ## Dials and what they do
 
 - **Noise** (now up to 1.0):
