@@ -153,7 +153,8 @@ const NODES = {
             body:()=>`<label class="muted">Steps${TAG_R} <select data-act="steps"><option value="">preset (${S.n_steps})</option>${[1,2,3,4,5].map(n=>`<option ${S.steps===n?'selected':''}>${n}</option>`).join('')}</select></label>
                       <span class="muted">Timesteps: ${S.step_list.join(', ')}</span>
                       <label><input type="checkbox" data-act="steer" ${S.attn_on?'checked':''}> attention steering${TAG_I}</label>
-                      <label title="With 2+ steps, skip the extra pass that re-reads the finished frames into memory; the last step's memory is used instead (one pass fewer per chunk)"><input type="checkbox" data-act="skip-clean" ${S.skip_clean_kv?'checked':''}> fast memory (2+ steps)${TAG_I}</label>`},
+                      <label class="lrow" title="After each chunk the model re-reads the finished frames once more to store a clean memory of them. Skipping it on some chunks is faster; never = fastest but drifts. Applies with 2+ steps.">Clean pass${TAG_I} <select data-act="clean-every">${[['1','every chunk (default)'],['2','every 2nd chunk'],['0','never (fast memory)']].map(([v,l])=>`<option value="${v}" ${(S.skip_clean_kv?'0':String(S.clean_kv_every||1))===v?'selected':''}>${l}</option>`).join('')}</select></label>
+                      <label class="lrow" title="Self-attention kernel. SageAttention 2: ~2x faster attention (8-bit), approximate">Attention${TAG_I} <select data-act="attn-backend">${[['flash','flash-attention (exact, default)'],['sage2','SageAttention 2 (faster)']].map(([v,l])=>`<option value="${v}" ${(S.attention_backend||'flash')===v?'selected':''}>${l}</option>`).join('')}</select></label>`},
   dec:     {t:'VAE decode', k:'out', x:1150, y:120, ins:['latent'], outs:['frames'], body:()=>`<span class="muted">Latent → 320×576 frames</span>`},
   up:      {t:'Upscaler', k:'out', x:1150, y:270, ins:['frames'], outs:['frames'], body:()=>`<span class="muted">Method${TAG_I}</span><select data-act="upscale"><option value="">preset (${S.upscale})</option>${S.upscalers.map(u=>`<option ${S.upscale_override===u?'selected':''}>${u}</option>`).join('')}</select>
             ${S.upscale==='bicubic-sharp' ? slider('sharpen', 'Sharpen', S.sharpen, 0, 2, 0.05) : ''}`},
@@ -470,7 +471,8 @@ world.addEventListener('change', e => {
   else if (act === 'sink') setP({sink_frames: v});
   else if (act === 'sink_refresh') setP({sink_refresh_s: +v});
   else if (act === 'person-seg') setP({person_seg: e.target.checked});
-  else if (act === 'skip-clean') setP({skip_clean_kv: e.target.checked});
+  else if (act === 'clean-every') setP(+v === 0 ? {skip_clean_kv: true, clean_kv_every: 1} : {skip_clean_kv: false, clean_kv_every: +v});
+  else if (act === 'attn-backend') setP({attention_backend: v});
   else if (act === 'feedback-mode') setP({feedback_mode: e.target.value});
   else if (act === 'depth-stride') setP({depth_stride: +e.target.value});
   else if (['zoom', 'y_offset', 'sharpen', 'depth_cutoff', 'place_scale', 'place_x', 'place_y', 'person_hint', 'depth_keep', 'feedback', 'feedback_motion'].includes(act)) e.target.blur();
