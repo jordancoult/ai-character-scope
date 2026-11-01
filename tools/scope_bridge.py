@@ -520,17 +520,25 @@ async def main() -> None:
         async def check_output_format():
             # v4l2loopback keeps its old size while any reader (ffplay, OBS) has it open, so switching
             # portrait <-> landscape with a viewer open writes frames into the wrong shape (stripes).
-            await asyncio.sleep(3)
             if not args.output.startswith("/dev/video"):
                 return
-            try:
-                fmt = Path(f"/sys/devices/virtual/video4linux/{Path(args.output).name}/format").read_text().strip()
-            except OSError:
-                return
-            if f":{OW}x{OH}@" not in fmt:
-                state["output_warning"] = (f"{args.output} is stuck at {fmt.split(':')[-1].split('@')[0]}, but the bridge writes "
+            # Poll: the format is blank until the writer opens the device, so don't judge it before then.
+            for _ in range(20):
+                await asyncio.sleep(3)
+                try:
+                    fmt = Path(f"/sys/devices/virtual/video4linux/{Path(args.output).name}/format").read_text().strip()
+                except OSError:
+                    return
+                size = fmt.split(":")[-1].split("@")[0] if ":" in fmt else ""
+                if "x" not in size:
+                    continue
+                if size == f"{OW}x{OH}":
+                    state["output_warning"] = ""
+                    return
+                state["output_warning"] = (f"{args.output} is stuck at {size}, but the bridge writes "
                                            f"{OW}x{OH}: output is scrambled. Close ffplay/OBS, restart, then reopen them.")
                 print(f"[bridge] WARNING: {state['output_warning']}", flush=True)
+                return
 
         asyncio.ensure_future(check_output_format())
         upscalers: dict[str, Upscaler] = {}
