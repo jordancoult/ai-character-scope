@@ -1,0 +1,26 @@
+diff --git a/LongLive2.0/pipeline/causal_diffusion_inference.py b/LongLive2.0/pipeline/causal_diffusion_inference.py
+index 375fb6a..36db8cc 100644
+--- a/LongLive2.0/pipeline/causal_diffusion_inference.py
++++ b/LongLive2.0/pipeline/causal_diffusion_inference.py
+@@ -636,7 +636,11 @@ class CausalDiffusionInferencePipeline(torch.nn.Module):
+                 if use_cfg:
+                     self._zero_kv_data(self.kv_cache_neg, current_start_tokens)
+ 
+-            self.generator(
++            # ai-character-scope: LL2_SKIP_CLEAN=1 keeps the last denoising step's KV instead of a
++            # separate clean pass (one DiT pass fewer per chunk); scene cuts still recache.
++            skip_clean = os.environ.get("LL2_SKIP_CLEAN") == "1" and not is_scene_cut
++            if not skip_clean:
++                self.generator(
+                 noisy_image_or_video=latents,
+                 conditional_dict=conditional_dict,
+                 timestep=timestep * 0,
+@@ -645,7 +649,7 @@ class CausalDiffusionInferencePipeline(torch.nn.Module):
+                 current_start=current_start_frame * self.frame_seq_length,
+                 cache_start=cache_start_frame * self.frame_seq_length
+             )
+-            if use_cfg:
++            if use_cfg and not skip_clean:
+                 self.generator(
+                     noisy_image_or_video=latents,
+                     conditional_dict=unconditional_dict,
