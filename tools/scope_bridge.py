@@ -766,7 +766,7 @@ async def main() -> None:
                 if "clean_kv_every" in body:  # clean pass on every Nth chunk (1 = every chunk)
                     state["clean_kv_every"] = max(1, min(4, int(body["clean_kv_every"])))
                     update["clean_kv_every"] = state["clean_kv_every"]
-                if body.get("attention_backend") in ("flash", "sage2"):  # self-attention kernel
+                if body.get("attention_backend") in ("flash", "sage2", "sage2first"):  # self-attention kernel
                     state["attention_backend"] = body["attention_backend"]
                     update["attention_backend"] = state["attention_backend"]
                 if "skip_clean_kv" in body:  # fast multi-step: no separate clean-memory pass (2+ steps only)
