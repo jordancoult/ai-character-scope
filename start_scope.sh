@@ -8,7 +8,7 @@
 #   CHARACTER_REF="a.png [b.png]"         reference image(s) for VACE (omit for prompt-only)
 #   PROMPT="..."                          text prompt describing the character
 #   PRESET=30|24|20|15                    starting FPS preset (change live on the slider page)
-#   MODEL=streamdiffusionv2|longlive|reward-forcing|memflow   model (default streamdiffusionv2; the others are LongLive-family)
+#   MODEL=streamdiffusionv2|longlive|reward-forcing|memflow|longlive2   model (longlive2 = LongLive 2.0, prompt-only, 1024x576)
 #   NOISE_MODE=fixed|random|auto          per-chunk noise pattern (default fixed; auto = preset choice; also on the page)
 #   CAMERA=/dev/video0  CAMERA_SIZE=1280x720
 #   AUDIO_DELAY_MS=350                    delay applied to the AI_Character_Mic virtual mic
@@ -100,6 +100,8 @@ export SCOPE_PRELOAD_DEPTH="${SCOPE_PRELOAD_DEPTH:-1}"
 # stalled until the next chunk (a hitch every ~0.6 s). The output queue also holds two chunks there.
 case "${MODEL:-streamdiffusionv2}" in
   longlive|reward-forcing|memflow) OUT_TARGET_DEFAULT=14; SINK_MAX_DEFAULT=24 ;;
+  longlive2) OUT_TARGET_DEFAULT=36; SINK_MAX_DEFAULT=72  # 32-frame chunks
+    export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" ;;  # 5B model near 16 GB
   *) OUT_TARGET_DEFAULT=3; SINK_MAX_DEFAULT=12 ;;
 esac
 export SCOPE_OUTPUT_TARGET_FRAMES="${SCOPE_OUTPUT_TARGET_FRAMES:-$OUT_TARGET_DEFAULT}"

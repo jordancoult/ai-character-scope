@@ -16,6 +16,7 @@ Run with Scope's venv after `source env.sh` (start_scope.sh does this).
 
 import argparse
 import asyncio
+import fractions
 import json
 import os
 import shlex
@@ -63,8 +64,9 @@ parser.add_argument("--ref", nargs="+", default=None, help="Character reference 
 parser.add_argument("--vace-scale", type=float, default=1.0)
 parser.add_argument("--noise-scale", type=float, default=None, help="Default 0.75 (0.9 for longlive, which follows the camera more)")
 # LongLive-family pipelines (Wan2.1 1.3B causal, 3-latent chunks, frame sink): same bridge behaviour
-LL_FAMILY = ("longlive", "reward-forcing", "memflow")
-parser.add_argument("--pipeline", default="streamdiffusionv2", choices=["streamdiffusionv2", "longlive", "reward-forcing", "memflow"],
+LL_FAMILY = ("longlive", "reward-forcing", "memflow", "longlive2")
+TEXT_MODELS = ("longlive2",)  # prompt-only generators: no camera, text input mode
+parser.add_argument("--pipeline", default="streamdiffusionv2", choices=["streamdiffusionv2", "longlive", "reward-forcing", "memflow", "longlive2"],
                     help="longlive = experimental: trained for long streams (frame sink + KV recache), "
                          "3 latent frames per chunk, no depth presets, no Blackwell speed patches")
 parser.add_argument("--vae", default=None, choices=["tae", "lighttae", "wan", "lightvae"],
@@ -86,6 +88,10 @@ parser.add_argument("--duration", type=float, default=0, help="Stop after N seco
 parser.add_argument("--no-load", action="store_true", help="Skip pipeline load (already loaded)")
 args = parser.parse_args()
 IMAGE_INPUT = Path(args.input).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+TEXT_MODEL = args.pipeline in TEXT_MODELS
+if TEXT_MODEL and args.size == [576, 320]:
+    args.size = [576, 1024]  # LongLive 2.0 degrades below ~1024x576
+    args.landscape = True
 if args.landscape:
     args.size, args.out_size = sorted(args.size), sorted(args.out_size)  # (H, W) with H < W
 if IMAGE_INPUT and args.noise_scale is None:
@@ -129,6 +135,8 @@ OVERRIDES = {"depth": None, "steps": None, "start": None, "vace_scale": args.vac
              "transition_steps": 0, "zoom": 1.0, "y_offset": 0.0, "sharpen": 0.6, "depth_cutoff": 0.0, "sink_refresh_s": 0.0, "place_scale": 1.0, "place_x": 0.5,
              "place_y": 0.6, "person_hint": 0.0, "depth_keep": 0.0, "person_seg": False, "place_fade_bottom": 0.12, "place_ground": False, "depth_stride": 4, "feedback": 0.0, "feedback_mode": "last", "feedback_motion": 1.0, "skip_clean_kv": False, "clean_kv_every": 1, "attention_backend": "default", "noise": args.noise_scale,
              "ref_source": "ref", "start_source": "start"}
+if TEXT_MODEL:  # LongLive 2.0 defaults: clean pass every 2nd chunk (exact attention = "default" there)
+    OVERRIDES["clean_kv_every"] = state["clean_kv_every"] = 2
 _restore = os.environ.pop("SCOPE_BRIDGE_RESTORE", None)
 if _restore and Path(_restore).is_file():
     for k, v in json.loads(Path(_restore).read_text()).items():
@@ -286,6 +294,25 @@ async def load_pipeline(client: httpx.AsyncClient) -> None:
             raise RuntimeError(f"pipeline load failed: {status}")
         await asyncio.sleep(1)
     print("[bridge] pipeline loaded", flush=True)
+
+
+class BlankTrack(VideoStreamTrack):
+    """Tiny black frames at 2 fps for prompt-only models: keeps the WebRTC session shape without the webcam.
+    (A full-size 30 fps dummy stream made the server decode + upload every frame on asyncio's shared thread
+    pool, which starved aiortc's output encoder: LongLive 2.0 output fell to ~2 fps.)"""
+
+    recorder = None
+
+    def __init__(self):
+        super().__init__()
+        self._n = 0
+
+    async def recv(self):
+        await asyncio.sleep(0.5)
+        self._n += 1
+        frame = VideoFrame.from_ndarray(np.zeros((32, 32, 3), np.uint8), format="rgb24")
+        frame.pts, frame.time_base = self._n * 45000, fractions.Fraction(1, 90000)
+        return frame
 
 
 class StillImageTrack(VideoStreamTrack):
@@ -509,7 +536,11 @@ async def main() -> None:
         if not args.no_load:
             await load_pipeline(client)
 
-        if IMAGE_INPUT:
+        if TEXT_MODEL:
+            player = None
+            source_track = BlankTrack()  # prompt-only model: never open the webcam
+            print(f"[bridge] {args.pipeline}: text-to-video, camera not used", flush=True)
+        elif IMAGE_INPUT:
             player = None
             source_track = StillImageTrack(args.input)
             print(f"[bridge] input: still image {args.input} (animated, noise {args.noise_scale}, {args.noise_mode})", flush=True)
@@ -523,7 +554,7 @@ async def main() -> None:
         channel = pc.createDataChannel("parameters", ordered=True)
         if player is not None:
             source_track = player.video
-        camera_track = CropResizeTrack(source_track, W, H, record=args.record_input)
+        camera_track = source_track if TEXT_MODEL else CropResizeTrack(source_track, W, H, record=args.record_input)
         pc.addTransceiver(camera_track, direction="sendrecv")
         done = asyncio.Event()
         ffmpeg = open_output()
@@ -587,6 +618,10 @@ async def main() -> None:
                         break
                     img = frame.to_ndarray(format="rgb24")
                     if img.shape[:2] != (H, W):
+                        if not getattr(pump, "_warned", False):
+                            pump._warned = True
+                            print(f"[bridge] skipping output frames of size {img.shape[1]}x{img.shape[0]} "
+                                  f"(expected {W}x{H}; pre-roll or size mismatch)", flush=True)
                         continue  # skip pre-roll frames at a different size
                     if args.latency_probe:
                         now = time.perf_counter()
@@ -622,7 +657,7 @@ async def main() -> None:
             apply_preset(state["preset"])
 
         await pc.setLocalDescription(await pc.createOffer())
-        params = {"pipeline_ids": [args.pipeline], "input_mode": "video",
+        params = {"pipeline_ids": [args.pipeline], "input_mode": "text" if TEXT_MODEL else "video",
                   "prompts": [{"text": state["prompt"], "weight": 1.0}], "manage_cache": True,
                   "vace_enabled": True, **preset_params(state["preset"], with_ref=True)}
         params.pop("reset_cache")
@@ -660,7 +695,7 @@ async def main() -> None:
                 {"preset": state["preset"], "fps": state["fps"], "upscale": state["upscale"],
                  "gpu_temp": state["gpu_temp"], "gpu_watts": state["gpu_watts"], "cpu_temp": state["cpu_temp"],
                  "gpu_thermal_throttle": state["gpu_thermal_throttle"],
-                 "label": ({"longlive": "[LongLive] ", "reward-forcing": "[RewardForcing] ", "memflow": "[MemFlow] "}.get(args.pipeline, "")) + PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
+                 "label": ({"longlive": "[LongLive] ", "reward-forcing": "[RewardForcing] ", "memflow": "[MemFlow] ", "longlive2": "[LongLive 2.0] "}.get(args.pipeline, "")) + PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
                  "fixed_noise": fixed_noise(state["preset"]), "prompt": state["prompt"],
                  "depth": state["depth"], "depth_on": effective_depth(state["preset"]),
                  "depth_available": True,  # LongLive gained depth_vace on the node-graph branch

@@ -180,7 +180,7 @@ const chk = (key) => `<input type="checkbox" data-launch="${key}" ${L[key]==='1'
 function launchBody() {
   if (!L) initLaunch();
   const kvDef = ({longlive:12, memflow:12, 'reward-forcing':9})[S.pipeline] || 6;
-  return `<div class="lrow">Model ${sel('MODEL', [['streamdiffusionv2','StreamDiffusionV2'],['longlive','LongLive'],['reward-forcing','Reward Forcing (new)'],['memflow','MemFlow (new)']])}</div>
+  return `<div class="lrow">Model ${sel('MODEL', [['streamdiffusionv2','StreamDiffusionV2'],['longlive','LongLive'],['reward-forcing','Reward Forcing (new)'],['memflow','MemFlow (new)'],['longlive2','LongLive 2.0 (prompt-only, 1024x576)']])}</div>
   <div class="lrow">Orientation ${sel('ORIENTATION', [['portrait','Portrait 9:16'],['landscape','Landscape 16:9']])}</div>
   <div class="lrow">Input ${sel('INPUT_IMAGE', [['','Camera'], ...(S.refs||[]).map(f=>['assets/'+f, 'Animate image: '+f])])}</div>
   <div class="lrow">Generation size ${sel('size', [['512 288','288×512'],['576 320','320×576'],['640 352','352×640']])}</div>
