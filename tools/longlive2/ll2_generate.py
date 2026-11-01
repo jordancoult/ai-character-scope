@@ -13,6 +13,13 @@ H, W = (int(sys.argv[4]), int(sys.argv[5])) if len(sys.argv) > 5 else (352, 640)
 prompt = sys.argv[6] if len(sys.argv) > 6 else "beautiful woman"
 
 import wan_5b.modules.causal_model as cm
+if os.environ.get("LL2_SAGE") == "1":
+    # SageAttention v1 (Triton: int8 QK, fp16 PV) for the DiT self-attention only
+    from sageattention import sageattn
+    def _sage_attention(q, k, v, *a, **kw):
+        return sageattn(q.contiguous(), k.contiguous(), v.contiguous(), tensor_layout="NHD", is_causal=False)
+    cm.attention = _sage_attention
+    print("[ll2] SageAttention on for self-attention", flush=True)
 _orig = cm.CausalWanModel.from_pretrained
 # The base Wan2.2 diffusion weights (20 GB) aren't downloaded: build from config.json only; the
 # generator checkpoint supplies every weight afterwards.

@@ -1,8 +1,22 @@
 # LongLive 2.0 (Wan2.2-TI2V-5B) on the RTX 5080 laptop: findings (2026-11-01)
 
+## Update: the user's verdict
+960×544 shows artifacts (random candles), so the model doesn't like that resolution. 1024×576 looked good. Treat **1024×576 as the minimum.**
+
+At 1024×576, window 24, compiled (`clean_modes_1024.jpg`):
+| Clean-KV pass | fps | Consistency at 20 s |
+|---|---|---|
+| every chunk | 12.7 | best |
+| **every 2nd chunk** (`LL2_CLEAN_EVERY=2`) | **15.2** | **as good as every chunk**: same woman, same room |
+| never (`LL2_SKIP_CLEAN=1`) | 18.7 | the background drifts (the wallpaper changes) |
+
+- **SageAttention v1** (Triton, int8 QK): +15% (16.9 → 19.4 fps), but it **damages the image**: a different face and neon, oversaturated hair over time (`sage_cmp.jpg`). Rejected.
+- **Profile at 1024×576:** attention 48%, FP4 GEMM 29%, elementwise ops and KV copies 22%.
+
+
 These tests ran outside Scope. The script is `tools/longlive2/ll2_generate.py` and the setup is in `tools/longlive2/README.md`. Every test used a pure generator (no camera), the prompt "beautiful woman", the 2-step NVFP4 checkpoint (`model_4o6.pt`) and about 21 s clips of 128 latent frames (512 video frames). The fps figures are end-to-end: model plus decoder.
 
-## Recipe: 20 fps at 960×544 that holds up past 20 s
+## First recipe (960×544, superseded by the update above)
 | Setting | Value | Why |
 |---|---|---|
 | Steps | **2** (native) | 5 steps on this 2-step checkpoint falls apart into neon blocks. |
@@ -25,7 +39,7 @@ Measured at 2 steps, KV in NVFP4 and the TAE decoder unless noted:
 | 1024×576 | skipped | 32 | 14.9 | 11.0 GB | **holds**, more motion |
 | 1024×576 | skipped | 24 | 16.9 (18.7 with compile) | 10.0 GB | **holds** |
 | 1024×576 | skipped | 16 | 19.7 | 9.1 GB | blobs appear |
-| **960×544** | skipped | **24** | **20.3** | 9.4 GB | **holds** (`s960.jpg`) |
+| 960×544 | skipped | 24 | 20.3 | 9.4 GB | the user saw artifacts (random candles) (`s960.jpg`) |
 
 ## Bugs and traps found on the way
 - **The text encoder ran on the CPU every chunk.** The pipeline encodes one copy of the prompt per block, so a cache keyed on the whole list never hit. Caching per unique prompt took steady-state speed from 4.4 to 44 fps at 640×352.

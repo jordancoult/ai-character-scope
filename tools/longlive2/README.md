@@ -22,10 +22,10 @@ mkdir -p models/LongLive-2.0-5B/fastvae && curl -sL -o models/LongLive-2.0-5B/fa
 mkdir -p longlive2/LongLive2.0/wan_models && ln -sfn ../../../models/LongLive-2.0-5B/Wan2.2-TI2V-5B longlive2/LongLive2.0/wan_models/Wan2.2-TI2V-5B
 ```
 
-Recommended run (960×544, 2 steps, about 20 fps, roughly 21 s clip, saves the mp4 and the frame at 20 s):
+Recommended run (1024×576, 2 steps, clean pass every 2nd chunk, compiled, about 15 fps; saves the mp4 and the frame at 20 s):
 ```bash
-LL2_LOCAL=24 LL2_SKIP_CLEAN=1 LL2_KVQ=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  scope/.venv/bin/python tools/longlive2/ll2_generate.py /tmp/out.mp4 2 16 544 960 "beautiful woman"
+LL2_LOCAL=24 LL2_CLEAN_EVERY=2 LL2_COMPILE=1 LL2_KVQ=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  scope/.venv/bin/python tools/longlive2/ll2_generate.py /tmp/out.mp4 2 16 576 1024 "beautiful woman"
 ```
 Switches:
 - `LL2_KVQ=1`: NVFP4 KV cache.
