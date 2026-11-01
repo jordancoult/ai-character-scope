@@ -5,8 +5,15 @@ import os, sys, time
 REPO = os.path.expanduser("~/personal/ai-character-scope/longlive2/LongLive2.0")
 sys.path[:0] = [os.path.join(REPO, "..", ".deps"), REPO]
 os.chdir(REPO)
+import logging, warnings
 import torch
 from omegaconf import OmegaConf
+
+# torch.compile can't fully compile the 4-bit layers / cache bookkeeping: harmless graph breaks and
+# recompile-limit notices. Keep them out of the console (set LL2_VERBOSE=1 to see them).
+if os.environ.get("LL2_VERBOSE") != "1":
+    torch._logging.set_logs(dynamo=logging.ERROR, inductor=logging.ERROR)
+    warnings.filterwarnings("ignore", category=UserWarning)
 
 out, steps, nlat = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 H, W = (int(sys.argv[4]), int(sys.argv[5])) if len(sys.argv) > 5 else (352, 640)
