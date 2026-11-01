@@ -152,7 +152,8 @@ const NODES = {
   dit:     {t:'Denoiser (DiT)', k:'model', x:870, y:230, ins:['sink','recent','current','prompt','vace'], outs:['latent','memory'],
             body:()=>`<label class="muted">Steps${TAG_R} <select data-act="steps"><option value="">preset (${S.n_steps})</option>${[1,2,3,4,5].map(n=>`<option ${S.steps===n?'selected':''}>${n}</option>`).join('')}</select></label>
                       <span class="muted">Timesteps: ${S.step_list.join(', ')}</span>
-                      <label><input type="checkbox" data-act="steer" ${S.attn_on?'checked':''}> attention steering${TAG_I}</label>`},
+                      <label><input type="checkbox" data-act="steer" ${S.attn_on?'checked':''}> attention steering${TAG_I}</label>
+                      <label title="With 2+ steps, skip the extra pass that re-reads the finished frames into memory; the last step's memory is used instead (one pass fewer per chunk)"><input type="checkbox" data-act="skip-clean" ${S.skip_clean_kv?'checked':''}> fast memory (2+ steps)${TAG_I}</label>`},
   dec:     {t:'VAE decode', k:'out', x:1150, y:120, ins:['latent'], outs:['frames'], body:()=>`<span class="muted">Latent → 320×576 frames</span>`},
   up:      {t:'Upscaler', k:'out', x:1150, y:270, ins:['frames'], outs:['frames'], body:()=>`<span class="muted">Method${TAG_I}</span><select data-act="upscale"><option value="">preset (${S.upscale})</option>${S.upscalers.map(u=>`<option ${S.upscale_override===u?'selected':''}>${u}</option>`).join('')}</select>
             ${S.upscale==='bicubic-sharp' ? slider('sharpen', 'Sharpen', S.sharpen, 0, 2, 0.05) : ''}`},
@@ -469,6 +470,7 @@ world.addEventListener('change', e => {
   else if (act === 'sink') setP({sink_frames: v});
   else if (act === 'sink_refresh') setP({sink_refresh_s: +v});
   else if (act === 'person-seg') setP({person_seg: e.target.checked});
+  else if (act === 'skip-clean') setP({skip_clean_kv: e.target.checked});
   else if (act === 'feedback-mode') setP({feedback_mode: e.target.value});
   else if (act === 'depth-stride') setP({depth_stride: +e.target.value});
   else if (['zoom', 'y_offset', 'sharpen', 'depth_cutoff', 'place_scale', 'place_x', 'place_y', 'person_hint', 'depth_keep', 'feedback', 'feedback_motion'].includes(act)) e.target.blur();

@@ -16,6 +16,14 @@
 #   ORIENTATION=landscape                 16:9 (576x320 -> 1280x720) instead of 9:16 portrait
 #   INPUT_IMAGE=assets/x.png              no camera: animate this still image (also its reference unless CHARACTER_REF set)
 #   BRIDGE_ARGS="--size 640 352 --seed 7"  extra scope_bridge.py arguments (generation size, VAE, seed)
+#   REMOTE_TOKEN=...                      require this token on the control page (all routes); unset = no auth.
+#                                         Read by scope_bridge.py from the environment (kept off the command line).
+#
+# Remote testing from a phone (output viewer + controls over a free Cloudflare quick tunnel):
+#   terminal 1:  tools/remote_tunnel.sh          # prints a token and, once up, https://....trycloudflare.com/remote?token=...
+#   terminal 2:  REMOTE_TOKEN=<that token> ./start_scope.sh --bridge
+#   The tunnel refuses to run (or stops) if the bridge answers without a token. Ctrl+C stops the tunnel.
+#   Output preview without a tunnel: http://127.0.0.1:8090/remote (also /out.jpg, /out.mjpg).
 set -u
 W="$HOME/personal/ai-character-scope"
 source "$W/env.sh"
@@ -135,6 +143,7 @@ if [ "$BRIDGE" = 1 ]; then
   PIDS+=($!)
   echo "[scope] bridge: $INPUT -> Scope (${ORIENTATION:-portrait}) -> /dev/video10 (AI_Scope_Cam)"
   echo "[scope] live controls (FPS, noise, reference, prompt): http://127.0.0.1:8090   (first ~30 s after start are slow while torch.compile warms up)"
+  [ -n "${REMOTE_TOKEN:-}" ] && echo "[scope] remote token set: control page needs ?token=... (phone viewer: /remote; tunnel: tools/remote_tunnel.sh)"
 fi
 
 echo "[scope] Ctrl+C to stop."

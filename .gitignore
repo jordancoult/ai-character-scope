@@ -17,3 +17,5 @@ __pycache__/
 *.pyc
 # Experiment review clips (notes in experiments/ are tracked)
 /experiments/**/*.mp4
+/longlive2/
+/backups/
