@@ -21,3 +21,6 @@ __pycache__/
 /backups/
 /wan_models
 .secrets/
+cloud/.pod
+cloud/third_party/
+cloud/.venv/
