@@ -6,7 +6,7 @@ RTX 5080 Laptop, between "frame received" and "frame played": **LivePortrait** r
 *generated* face with the lip keypoints of the *real* face, then pastes it back with a feathered mask. Identity,
 eyes, hair and background stay JoyAI's.
 
-Status: offline prototype, measured on recorded clips. Not wired into `live_bridge.py` yet (plan at the end).
+Status: measured on recorded clips; wired into `live_bridge.py` behind `--facefix` (off by default, see "Live").
 
 ## Results (RTX 5080 Laptop 16 GB, torch 2.9.1+cu128)
 Lip sync, scored with `cloud/client/mouth_sync.py` (exact `source_seq` pairing, MediaPipe lip gap):
@@ -73,7 +73,7 @@ The gain at stream scale is modest and none of the networks fit next to the lip 
 (25 + 30 ms). Use `--restore sharpen` if you want something, GFPGAN only with a human ref once TensorRT frees GPU
 time. CodeFormer is non-commercial (below).
 
-## Licenses (the user streams on TikTok, i.e. commercial use)
+## Licenses (for the record; the project is academic, so non-commercial models are allowed)
 | Component | License | OK? |
 |---|---|---|
 | LivePortrait code + weights (KwaiVGI, HF `KwaiVGI/LivePortrait`) | MIT | yes |
@@ -121,16 +121,40 @@ Without `--seq-json` the pairing comes from DTW over grid motion energy (`--alig
 scaling was clearly worse: jawOpen corr 0.21 vs 0.34 for JoyAI on the human clip). `bench_lp.py` times the
 LivePortrait parts.
 
-## Integrating into `live_bridge.py` (recommendation)
-1. Keep a dict `seq → (input frame 840×480, analyze_input future)` in the sender; run `analyze_input` in a CPU
-   thread at capture (23 ms < 33 ms per frame; drop hands to every 2nd frame if the CPU is busy). Evict after ~3 s.
-2. In the receiver, each decoded frame has `source_seq` in its `output_frame` meta: look up the input, run
-   `FacePass.analyze` in a worker thread and `render` in another (or a 2-deep queue), and put the refined frame in
-   the playout queue. Budget: 25 ms GPU + ~10 ms CPU per frame at lp 128 → ~38 fps, so 25 fps with ~35 % headroom;
-   adds ~40 ms latency (glass-to-glass 1.03 → ~1.08 s). If a frame isn't done in time, play the raw frame
-   (the weight EMA hides it).
-3. Default off (`--facefix` flag, new features default to bypass); `--facefix-lip-mode rel` for cartoon refs,
-   `abs` for human refs; watch GPU temperature (the 5080 Laptop sat at 64–74 °C in these runs).
-4. Next for quality: **TensorRT via FasterLivePortrait** (MIT; their grid-sample-3D plugin) to make lp 256 real-time
-   (sharper mouth on close-ups) and leave room for GFPGAN on human refs. Also worth trying: `--region lip+eyes` for
-   blinks (not evaluated), and recording a clip with 25–45° head turns to tune the pose gate.
+## Live: `live_bridge.py --facefix abs|rel`
+Wired in, off by default. Run the bridge with this venv's python when the flag is on (it has torch, mediapipe and
+websockets); with the flag off the bridge still runs from `cloud/.venv` (facefix is imported lazily).
+```bash
+cloud/facefix/.venv/bin/python cloud/client/live_bridge.py --url ws://127.0.0.1:18080/ws \
+  --input /dev/video0 --output ffplay --portrait --out-size 720x1260 \
+  --ref assets/char_front.png --prompt "$(cat cloud/pipelines/joyai/prompts/gstar.txt)" --facefix rel
+# human ref: --ref assets/blonde-gamer-girl.png --prompt "$(cat cloud/pipelines/joyai/prompts/human_blonde.txt)" --facefix abs
+```
+Flags: `--facefix-size 128|256`, `--facefix-restore none|sharpen|gfpgan|codeformer`, `--facefix-extra '<facefix.py
+flags>'` (e.g. `--yaw-hi 45 --no-hands`), `--review out.mp4` (input | JoyAI | played, ≤ 1920 wide),
+`--save-input in.mp4` (+ `in.json` with source_seq per played frame, for `mouth_sync.py`). `--output ffplay` opens a
+low-delay ffplay window ("ai-livestream"); `/dev/video10` and `.mp4` sinks work as before.
+
+How: the sender caches every sent frame (generation size) by seq and starts `analyze_input` on it in a CPU thread;
+the receiver pairs each decoded frame with its input through the server's `source_seq` and queues output analysis
+(CPU thread, in order) + render (GPU thread); the player takes the refined frame if it is done by its playout
+time, else plays the raw JoyAI frame and cancels the render. Warm-up (cuDNN autotune + compile) takes ~15 s before
+the session starts.
+
+Offline test of the whole bridge path: `mock_server.py` replays a recorded, frame-aligned JoyAI output in the
+server's 8-frame chunk rhythm (`experiments/2026-11-02-live/`, review sheets `sheet_review_mock_*.jpg`):
+
+| Run (20 s, 30 fps in, 25 fps playout) | facefix hit rate | render | lip-gap corr (mouth_sync on the played video) |
+|---|---|---|---|
+| human ref, `abs` | 97.8 % (misses: first frames after start) | 28 ms | **0.94** (JoyAI 0.25) |
+| G-Star, `rel` | 98.5 % | 27 ms | **0.63** (JoyAI 0.03) |
+
+0 dropped frames; the ~30 repeated frames come from the mock's chunk timing at start/end. Glass-to-glass in the
+mock (~1.0–1.1 s) is not meaningful; see below for runs against the real server.
+
+## Next
+- **TensorRT via FasterLivePortrait** (MIT; grid-sample-3D plugin) to make `--facefix-size 256` real-time (sharper
+  mouth on close-ups) and leave GPU time for GFPGAN/CodeFormer on human refs.
+- Non-commercial options are allowed (academic project): InsightFace detection/landmarks for LivePortrait's own
+  crop, CodeFormer (most natural restorer here, 54 ms), X-Pose for the animal model. Not tried with them yet.
+- `--facefix-extra '--region lip+eyes'` for blinks (not evaluated); a clip with 25–45° head turns to tune the pose gate.
