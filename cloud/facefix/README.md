@@ -148,6 +148,35 @@ facefix before | facefix after):
   (cross-fade at chunk boundaries), a fixed noise seed per session, a smaller `max_temporal_ids` / shorter temporal
   window, or one more denoising step (E_steps3 run: slower).
 
+## Clarity: facefix blurred the face (eyes and brows too) — fixed (`experiments/2026-11-02-clarity/`)
+Cause (ours): the old lower-face mask started near eye level in LivePortrait's crop, so the soft 128 px render
+replaced eyes, brows and cheeks; plus bilinear resampling and no detail transfer. New defaults for LivePortrait:
+- `--mask chin`: ellipse in frame pixels from 1.5× the mouth→subnasale distance above the mouth to below the chin
+  (+25 % for the jaw drop), 1 mouth-width half-width, 5 px feather, rotated with the mouth line. Everything outside
+  is copied back pixel-for-pixel: measured max abs difference in the eye/brow box = **0** on every frame (before
+  encoding).
+- `--detail sep`: frequency separation inside the mask: low band (σ 2 px) from the render, high band from JoyAI
+  where both agree at low frequency (|Δ| < 20 grey levels); where they differ (open-mouth interior, moved lips) the
+  render's band, boosted ×1.6 (`--render-sharpen 0.6`).
+- One cubic warp from the render to the frame, colour match in frame space.
+
+Laplacian-variance ratio refined / JoyAI raw (1 = as sharp as JoyAI; `clarity.py`), offline replay on the recorded
+raw JoyAI output:
+
+| Clip | Version | Whole face | Eyes + brows | Mouth | Lip sync (talking clip) | Mouth jitter / lip-gap wobble (static) |
+|---|---|---|---|---|---|---|
+| static open mouth (G-Star, portrait) | before (lower mask) | 0.55 | 0.43 | 0.50 | | 1.53 / 1.40 % (raw 1.25 / 1.74) |
+| | chin mask only | 0.93 | 1.00 | 0.71 | | |
+| | **chin + sep (default)** | **0.97** | **1.00** | **0.91** | | 1.41 / 1.26 % |
+| talking G-Star (C clip) | before | 0.75 | 0.69 | 0.90 | 0.71 | |
+| | **chin + sep (default)** | **1.18** | **1.01** | 1.63* | **0.72** | |
+
+\* above 1 because the refined mouth is open with teeth where JoyAI's is closed (more edges), not ringing; see
+`sheet_talking_zoom.jpg`. A tighter mask top (at the nose) cost lip sync (0.53–0.63); 1.5× restores it.
+ms/frame unchanged (render 25–30 ms, 31–34 fps pipelined incl. writing). `--lp-size 256` would still be 58 ms.
+Review videos: `review_static_zoom.mp4`, `review_talking_zoom.mp4` (JoyAI raw | before | after, zoomed) and the
+`_full` versions. A live confirmation run didn't start (server busy).
+
 ## Licenses (for the record; the project is academic, so non-commercial models are allowed)
 | Component | License | OK? |
 |---|---|---|

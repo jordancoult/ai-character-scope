@@ -507,20 +507,45 @@ class FacePass:
             c256 = cv2.cvtColor(cv2.resize(cg, (256, 256), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB)
             clp = cv2.cvtColor(cv2.resize(cg, (self.rt.lp, self.rt.lp), interpolation=cv2.INTER_AREA),
                                cv2.COLOR_BGR2RGB) if self.rt.lp != 256 else None
-            gen = cv2.cvtColor(self.rt(cin, c256, clp), cv2.COLOR_RGB2BGR).astype(np.float32)
-            mk = self.mask
-            if a.mask == "mouth" and (st["fo_pts"] is not None or st["fi_pts"] is not None):
-                mk = self.mouth_mask(st["fo_pts"] if st["fo_pts"] is not None else st["fi_pts"], Mo, g)
-            ws = mk.sum() + 1e-6                              # colour-match the re-rendered face to the original
-            gen += ((cg * mk[..., None]).sum((0, 1)) - (gen * mk[..., None]).sum((0, 1))) / ws
+            gen = cv2.cvtColor(self.rt(cin, c256, clp), cv2.COLOR_RGB2BGR)
             Minv = cv2.invertAffineTransform(Mo)
-            x0, y0, x1, y1 = self.roi(Minv, g, w, h)           # paste only inside the face's bounding box
+            fpts = st["fo_pts"] if st["fo_pts"] is not None else st["fi_pts"]
+            if a.mask == "chin" and fpts is not None:
+                # tight mask below the nose in frame pixels: everything else stays JoyAI's, pixel-identical
+                x0, y0, x1, y1, m = self.chin_mask(fpts, w, h, a.feather, a.chin_top, a.chin_width)
+            else:
+                mk = self.mask
+                if a.mask == "mouth" and fpts is not None:
+                    mk = self.mouth_mask(fpts, Mo, g)
+                x0, y0, x1, y1 = self.roi(Minv, g, w, h)
+                Mr0 = Minv.copy()
+                Mr0[:, 2] -= (x0, y0)
+                m = cv2.warpAffine(mk, Mr0, (x1 - x0, y1 - y0))
             Mr = Minv.copy()
             Mr[:, 2] -= (x0, y0)
-            back = cv2.warpAffine(np.clip(gen, 0, 255).astype(np.uint8), Mr, (x1 - x0, y1 - y0))
-            m = cv2.warpAffine(mk * wgt, Mr, (x1 - x0, y1 - y0))[..., None]
+            back = cv2.warpAffine(gen, Mr, (x1 - x0, y1 - y0), flags=cv2.INTER_CUBIC,
+                                  borderMode=cv2.BORDER_REPLICATE).astype(np.float32)   # one resampling step
+            roi = O[y0:y1, x0:x1].astype(np.float32)
+            ws = m.sum() + 1e-6                                # colour-match the render to JoyAI inside the mask
+            back += ((roi * m[..., None]).sum((0, 1)) - (back * m[..., None]).sum((0, 1))) / ws
+            if a.detail == "sep":
+                # frequency separation: low band from the render, high band (texture, edges) from JoyAI where
+                # both agree at low frequency; where they differ (open-mouth interior, moved lips) the render's
+                # full band is used
+                sg = a.detail_sigma
+                lb, lo = cv2.GaussianBlur(back, (0, 0), sg), cv2.GaussianBlur(roi, (0, 0), sg)
+                k = np.clip(1 - np.abs(lb - lo).mean(2, keepdims=True) / a.detail_thr, 0, 1)
+                back = lb + k * (roi - lo) + (1 - k) * (1 + a.render_sharpen) * (back - lb)
+            mm = (m * wgt)[..., None]
             res = O.copy()
-            res[y0:y1, x0:x1] = (back * m + O[y0:y1, x0:x1] * (1 - m)).astype(np.uint8)
+            res[y0:y1, x0:x1] = np.clip(back * mm + roi * (1 - mm) + 0.5, 0, 255).astype(np.uint8)
+            if a.mask == "chin":                               # outside the mask: exactly JoyAI's pixels
+                out = mm[..., 0] <= 0
+                res[y0:y1, x0:x1][out] = O[y0:y1, x0:x1][out]
+                e = fpts[[70, 105, 107, 336, 334, 300, 33, 133, 145, 362, 263, 374]]
+                ex0, ey0 = np.maximum(e.min(0).astype(int) - 5, 0)
+                ex1, ey1 = e.max(0).astype(int) + 5
+                info["eye_diff"] = int(np.abs(res[ey0:ey1, ex0:ex1].astype(int) - O[ey0:ey1, ex0:ex1]).max())
         t2 = time.perf_counter()
         if a.restore == "sharpen" and rect is not None and wgt > 0.01:
             res = sharpen(res, rect, a.sharpen * wgt)
@@ -532,6 +557,35 @@ class FacePass:
 
     def __call__(self, I, O):
         return self.render(self.analyze(I, O))
+
+    @staticmethod
+    def chin_mask(pts, w, h, feather=8.0, top_k=1.0, width_k=0.85):
+        """Ellipse from just below the nose (subnasale) to below the chin, as wide as the mouth + margin, rotated
+        with the mouth line, feathered by `feather` px inside its edge. Returns ROI (x0, y0, x1, y1) and the mask."""
+        L, R, top, chin, c13, c14 = pts[61], pts[291], pts[2], pts[152], pts[13], pts[14]
+        mw = np.linalg.norm(R - L)
+        ux = (R - L) / (mw + 1e-6)
+        uy = np.array([-ux[1], ux[0]])
+        if uy @ (chin - top) < 0:
+            uy = -uy
+        mc = (L + R + c13 + c14) / 4
+        y_top = (top - mc) @ uy * top_k              # negative: nose is above the mouth
+        y_bot = (chin - mc) @ uy
+        y_bot += 0.25 * (y_bot - y_top)              # room for the jaw to drop
+        cy = (y_top + y_bot) / 2
+        ax, ay = width_k * mw, (y_bot - y_top) / 2
+        c = mc + uy * cy
+        r = int(max(ax, ay) + 2 * feather + 4)
+        x0, y0 = max(int(c[0]) - r, 0), max(int(c[1]) - r, 0)
+        x1, y1 = min(int(c[0]) + r, w), min(int(c[1]) + r, h)
+        m = np.zeros((max(y1 - y0, 1), max(x1 - x0, 1)), np.float32)
+        ang = np.degrees(np.arctan2(ux[1], ux[0]))
+        sh = 1.5 * feather                           # shrink so the blur tail stays inside the ellipse
+        cv2.ellipse(m, (int(round(c[0] - x0)), int(round(c[1] - y0))),
+                    (max(int(ax - sh), 1), max(int(ay - sh), 1)), ang, 0, 360, 1.0, -1)
+        m = cv2.GaussianBlur(m, (0, 0), feather / 2)
+        m[m < 1e-3] = 0
+        return x0, y0, x1, y1, m
 
     @staticmethod
     def mouth_mask(pts, Mo, g):
@@ -590,8 +644,20 @@ def add_args(p):
     p.add_argument("--mapped-weight", type=float, default=0.7, help="effect weight when the box is mapped from input")
     p.add_argument("--max-offset", type=float, default=0.5, help="output face must be within this many face sizes "
                    "of the input face, else the input box is used")
-    p.add_argument("--mask", default="lower", choices=["face", "lower", "mouth"],
-                   help="lp: paste the whole face, the lower half, or a feathered ellipse around the mouth")
+    p.add_argument("--mask", default="chin", choices=["chin", "face", "lower", "mouth"],
+                   help="lp: chin = below the nose only, rest pixel-identical to JoyAI (default); face / lower half / "
+                        "mouth ellipse = older variants")
+    p.add_argument("--feather", type=float, default=5.0, help="chin mask feather in frame pixels")
+    p.add_argument("--chin-width", type=float, default=1.0, help="mask half-width in mouth widths")
+    p.add_argument("--chin-top", type=float, default=1.5, help="mask top as a multiple of the mouth->subnasale "
+                   "distance (1 = at the nose; >1 reaches above it)")
+    p.add_argument("--detail", default="sep", choices=["sep", "none"],
+                   help="sep: keep JoyAI's high frequencies inside the mask where the render agrees at low frequency")
+    p.add_argument("--detail-sigma", type=float, default=2.0)
+    p.add_argument("--render-sharpen", type=float, default=0.6, help="boost of the render's own high band where it "
+                   "is used (open-mouth interior); the 128 px render is soft")
+    p.add_argument("--detail-thr", type=float, default=20.0, help="low-band difference (grey levels) at which the "
+                   "render's full band takes over")
     p.add_argument("--yaw-lo", type=float, default=25), p.add_argument("--yaw-hi", type=float, default=40)
     p.add_argument("--pitch-lo", type=float, default=20), p.add_argument("--pitch-hi", type=float, default=35)
     p.add_argument("--no-hands", dest="hands", action="store_false", help="skip the hand-over-mouth check")
@@ -705,6 +771,9 @@ def main():
            "active_frac": round(float(active.mean()), 3),
            "mean_weight": round(float(np.mean([i["weight"] for i in infos])), 3),
            "src": {k: sum(i["src"] == k for i in infos) for k in ("out", "in", "none")}}
+    ed = [i["eye_diff"] for i in infos if "eye_diff" in i]
+    if ed:
+        res["eye_region_max_abs_diff"] = int(max(ed))
     ids = [(i["id_joyai"], i["id_refined"]) for i in infos if "id_refined" in i]
     if ids:
         res["identity_cos_joyai_refined"] = [round(float(np.mean([x[0] for x in ids])), 3),
