@@ -35,6 +35,9 @@ p.add_argument("--out", default="out.mp4", help="edited output video")
 p.add_argument("--out-input", default=None, help="also save the frames that were sent")
 p.add_argument("--stats", default=None, help="write a JSON summary here")
 p.add_argument("--extra", default="{}", help="extra JSON fields for the start message")
+p.add_argument("--codec", default="mjpeg", choices=["mjpeg", "h264"],
+               help="wire codec both ways; h264 is what the official web client uses (~10x less bandwidth)")
+p.add_argument("--h264-crf", type=int, default=20, help="uplink H.264 quality")
 args = p.parse_args()
 
 
@@ -52,7 +55,7 @@ async def main():
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30
     start = {"type": "start", "prompt": args.prompt, "width": args.width, "height": args.height,
              "fps": args.fps, "num_inference_steps": args.steps, "seed": args.seed,
-             "input_codec": "mjpeg", "output_codec": "mjpeg", "detection_mode": "off",
+             "input_codec": args.codec, "output_codec": args.codec, "detection_mode": "off",
              "use_pe": False, "output_quality": 92}
     if args.ref:
         with open(args.ref, "rb") as f:
@@ -75,6 +78,34 @@ async def main():
             return
         H, W = msg["height"], msg["width"]
         stop = asyncio.Event()
+        enc = dec = None
+        if args.codec == "h264":
+            import av
+            enc = av.CodecContext.create("libx264", "w")
+            enc.width, enc.height, enc.pix_fmt = W, H, "yuv420p"
+            enc.options = {"preset": "veryfast", "tune": "zerolatency", "crf": str(args.h264_crf), "g": "16",
+                           "x264-params": "scenecut=0:repeat-headers=1:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=tv"}
+            enc.open()
+            dec = av.CodecContext.create("h264", "r")
+
+        def encode_frame(bgr):
+            if enc is None:
+                ok, jpg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, args.quality])
+                return jpg.tobytes()
+            import av
+            vf = av.VideoFrame.from_ndarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), format="rgb24")
+            vf = vf.reformat(format="yuv420p", dst_colorspace="itu709")  # server assumes a BT.709 uplink (Chrome)
+            return b"".join(bytes(pk) for pk in enc.encode(vf))
+
+        def decode_frame(data):
+            if dec is None:
+                return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+            import av
+            try:
+                fr = dec.decode(av.Packet(data))
+            except av.error.InvalidDataError:
+                return None
+            return fr[-1].to_ndarray(format="bgr24") if fr else None
 
         async def sender():
             nonlocal t_started
@@ -95,11 +126,11 @@ async def main():
                     await asyncio.sleep(0.001)
                     continue
                 frame = crop_resize(frame, W, H)
-                ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, args.quality])
+                wire = encode_frame(frame)
                 seq += 1
                 now_ms = time.time() * 1000.0
                 await ws.send(json.dumps({"type": "frame_meta", "seq": seq, "t_capture_ms": now_ms}))
-                await ws.send(jpg.tobytes())
+                await ws.send(wire)
                 if args.out_input:
                     sent_frames.append(frame)
                 next_t = t_started + seq * period
@@ -125,7 +156,7 @@ async def main():
                             print("[client]", j)
                 else:
                     now = time.time()
-                    img = cv2.imdecode(np.frombuffer(m, np.uint8), cv2.IMREAD_COLOR)
+                    img = decode_frame(m)
                     if img is not None:
                         recv_frames.append(img)
                         recv_t.append(now)
