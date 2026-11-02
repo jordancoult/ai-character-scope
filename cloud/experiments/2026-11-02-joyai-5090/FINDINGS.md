@@ -18,3 +18,10 @@ transatlantic round trip), upper body with arms, character from a reference imag
 
 Startup on a fresh 5090 pod: env ~5 min (cached kernel wheels); first compile ~12 min with the cache on local disk
 (was ~60 min directly on the network volume). Cache saved to the volume for later starts.
+
+## More 5090 runs (laptop → EU, H.264, 30 fps input)
+| Run | Size | fps | Latency median / p95 | Look |
+|---|---|---|---|---|
+| `human` (blonde ref, `webcam_7643311`) | 840×480 | 23.4 | 0.69 / 0.89 s | very close identity; hand gestures followed well |
+| `portrait_gstar` (boxer clip, fast side-on motion) | 480×840 | 25.4 | 0.68 / 0.78 s | body/chain transfer; face unstable in profile; a hard non-webcam clip |
+| `portrait_desk` (desk clip cropped 9:16) | **480×840** | **25.6** | **0.68 / 0.78 s** | best G-Star so far: sleepy half-open eyes like the ref, cap, chain, gestures |
