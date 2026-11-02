@@ -23,6 +23,7 @@ experiments/), keep it provider-independent, and add a row here.
 | `infra/providers.md` | How to rent a machine on RunPod / Vast.ai / others; stock and price notes |
 | `infra/artifacts.md` | The private Hugging Face artifacts repo: contents, how to publish/refresh |
 | `infra/docker/` | Draft Docker image (not built yet) |
+| `docs/hybrid-pipelines.md` | **How one pipeline spans several GPU machines** (stages, hosts, transport, `seq`/`source_seq`, rules); JoyAI + local facefix as the example |
 | `docs/lessons.md` | Things that cost time once; read before changing infra |
 | `third_party/` | Read-only upstream clones for reference (gitignored) |
 

@@ -25,6 +25,8 @@ patches) · `cloud/docs/lessons.md` (hard-won rules).
 - **One folder per pipeline** under `cloud/pipelines/<name>/`: `setup.sh`, `run_server.sh`, `README.md` (recipe,
   numbers), `experiments/<date>-<topic>/FINDINGS.md` (+ review videos, which are gitignored).
 - Shared client code (live bridge to OBS, benchmark client, review tools) lives in `cloud/client/`.
+- **Hybrid pipelines** (stages split across the local GPU and rented GPUs) follow `cloud/docs/hybrid-pipelines.md`:
+  frames carry `seq`/`source_seq`, optional stages default off and never block playout.
 
 ## Working rules (from the user)
 - Commit and push tested changes right away; noreply email `33331023+jordancoult@users.noreply.github.com`,
