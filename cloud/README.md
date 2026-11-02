@@ -1,12 +1,12 @@
-# Cloud pipelines: live character swap on a rented Blackwell GPU
+# Cloud pipelines: realtime AI livestream video on a rented Blackwell GPU
 
-Webcam → character from a reference image (upper body with arms) → OBS, rendered on a rented GPU. Each pipeline
-is a different model behind the same live bridge. Start with `../AGENTS.md` for the repo-wide rules.
+Webcam → AI-transformed video → OBS, rendered on a rented GPU. Each pipeline is a model + task (character swap,
+restyle, world generation, ...) behind the same live bridge. Shared bar: 25–30 fps, < 2 s input → output. Start with `../AGENTS.md` for the repo-wide rules.
 
 ## Pipelines
-| Pipeline | Model | GPU | Result | Status |
-|---|---|---|---|---|
-| [`joyai`](pipelines/joyai/README.md) | JoyAI-Video-Edit (JD, Apache-2.0, 16B streaming editor, ckpt `1101_face++`) | RTX 5090 / RTX PRO 6000 (sm_120, ≥ 32 GB) | **25–27 fps** at 840×480 / 480×840, **0.46 s** on the GPU machine, **~1 s** laptop → EU → laptop | working |
+| Pipeline | Task | Model | GPU | Result | Status |
+|---|---|---|---|---|---|
+| [`joyai`](pipelines/joyai/README.md) | character swap from a reference image (also instruction edits: restyle, background, ...) | JoyAI-Video-Edit (JD, Apache-2.0, 16B streaming editor, ckpt `1101_face++`) | RTX 5090 / RTX PRO 6000 (sm_120, ≥ 32 GB) | **25–27 fps** at 840×480 / 480×840, **0.46 s** on the GPU machine, **~1 s** laptop → EU → laptop | working |
 
 Adding a pipeline: copy the shape of `pipelines/joyai/` (setup.sh with the GPU check, run_server.sh, README.md,
 experiments/), keep it provider-independent, and add a row here.

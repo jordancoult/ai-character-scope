@@ -1,8 +1,10 @@
 # AGENTS.md — start here (for Claude agents and humans picking up this repo)
 
-**Goal:** a live stream where the user's webcam is turned into a character from one reference image (at least the
-upper body with arms), consistent, decent quality, **25–30 fps**, low latency (**< 2 s** input → output on the GPU
-machine), output into OBS (virtual camera) for TikTok. Owner: jordancoult. Characters: "G-Star"
+**Scope:** realtime AI video pipelines for live streaming (webcam in → AI-transformed video out → OBS virtual camera
+→ TikTok etc.). Several pipelines, several models; shared bar: **25–30 fps**, low latency (**< 2 s** input → output
+on the GPU machine), decent quality and consistency.
+**First pipeline (working):** character swap: the webcam person becomes a character from one reference image (at
+least the upper body with arms). Others so far: prompt-driven "dream"/world generation on the laptop (LongLive family). Owner: jordancoult. Characters: "G-Star"
 (`assets/char_front.png`, a pink cone-headed starfish man with a G-Star cap and gold chain) and human references.
 
 ## Two worlds in one repo

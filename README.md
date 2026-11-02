@@ -11,7 +11,7 @@ RTX 5080 Laptop GPU (Blackwell, `sm_120`, 16 GB). ~29 FPS live (input-limited), 
 | [AGENTS.md](AGENTS.md) | The whole picture in one page: goal, local vs cloud, rules, secrets, how to pick up the work |
 | [README_QUICKSTART.md](README_QUICKSTART.md) | **Local realtime** (laptop GPU, Scope): setup, presets, model status table, benchmarks, every patch |
 | [START_HERE.md](START_HERE.md) | Local: just start it (commands for the live webcam → character → OBS path) |
-| [cloud/README.md](cloud/README.md) | **Cloud realtime** (rented RTX 5090): pipeline index, quickstart, live bridge to OBS |
+| [cloud/README.md](cloud/README.md) | **Cloud realtime pipelines** (rented RTX 5090): pipeline index (character swap first), quickstart, live bridge to OBS |
 | [cloud/pipelines/joyai/README.md](cloud/pipelines/joyai/README.md) | JoyAI-Video-Edit: recipe, numbers (25–27 fps, ~1 s), limits |
 | [experiments/](experiments/) · [cloud/pipelines/*/experiments/](cloud/pipelines/joyai/experiments/) | Dated test runs with FINDINGS.md: local model tests / cloud tests |
 | [cloud/docs/lessons.md](cloud/docs/lessons.md) | Mistakes that cost time once |
