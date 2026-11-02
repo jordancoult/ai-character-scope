@@ -26,3 +26,7 @@ cloud/third_party/
 cloud/.venv/
 cloud/**/*.mp4
 cloud/client/models/
+cloud/facefix/.venv/
+cloud/facefix/third_party/
+cloud/facefix/weights/
+cloud/facefix/experiments/**/*.json
