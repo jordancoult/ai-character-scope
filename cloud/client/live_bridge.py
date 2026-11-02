@@ -42,7 +42,7 @@ p.add_argument("--input", default="/dev/video0", help="v4l2 device or a video fi
 p.add_argument("--input-size", default="1280x720", help="capture size for v4l2 devices")
 p.add_argument("--output", default="/dev/video10", help="v4l2loopback device, .mp4 file or 'ffplay' (a window)")
 p.add_argument("--out-size", default=None, help="output WxH after resize (default: generation size)")
-p.add_argument("--ref", required=True)
+p.add_argument("--ref", default=None, help="reference image (character); omit for a prompt-only edit")
 p.add_argument("--prompt", required=True)
 p.add_argument("--portrait", action="store_true", help="480x840 (9:16) instead of 840x480")
 p.add_argument("--fps", type=float, default=26, help="camera send rate (JoyAI on an RTX 5090 outputs ~25-26 fps; "
@@ -264,13 +264,17 @@ class FaceFixer:
 
 
 async def main():
-    with open(args.ref, "rb") as f:
-        ref = "data:image/png;base64," + base64.b64encode(f.read()).decode()
-    start = {"type": "start", "prompt": args.prompt, "ref_image": ref, "width": W, "height": H, "fps": args.fps,
+    ref = None
+    if args.ref:
+        with open(args.ref, "rb") as f:
+            ref = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+    start = {"type": "start", "prompt": args.prompt, "width": W, "height": H, "fps": args.fps,
              "num_inference_steps": 2, "input_codec": "h264", "output_codec": "h264", "detection_mode": "off",
              "use_pe": False, "kv_reset_frames": 0,
              # freeze-on-static skips "static" frames; it also drops subtle mouth motion (lip-sync test 2026-11-02)
              "freeze_kv_on_static": False, **json.loads(args.extra)}
+    if ref:
+        start["ref_image"] = ref
     src = Source(args.input)
     ff = FaceFixer() if args.facefix != "off" else None
     queue = collections.deque()          # (frame, t_capture_ms)
