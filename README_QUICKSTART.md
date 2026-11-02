@@ -21,8 +21,8 @@ every script derives the repo root from its own location (`env.sh` exports it as
 component comes from: [README.md → Components](README.md#components-and-where-they-come-from).
 
 ```bash
-git clone git@github.com:jordancoult/ai-character-scope.git   # branch main; optional: add a target folder, any name works
-cd ai-character-scope
+git clone git@github.com:jordancoult/ai-livestream.git   # branch main; optional: add a target folder, any name works
+cd ai-livestream   # or whatever folder you cloned into
 curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=$PWD/bin UV_NO_MODIFY_PATH=1 sh
 source env.sh
 
@@ -114,7 +114,7 @@ Still to do: real webcam + OBS test · cone-shaped head · optional GPU clock lo
 Just want to start it? See [START_HERE.md](START_HERE.md).
 
 ```bash
-cd ai-character-scope   # your clone (any folder name/location)
+cd ai-livestream   # your clone folder (any name; on the original laptop: ~/personal/ai-character-scope)
 
 # Live: webcam -> character -> /dev/video10 "AI_Scope_Cam" (720x1280) + delayed mic "AI_Character_Mic"
 CHARACTER_REF=assets/char_front.png \

@@ -1,4 +1,4 @@
-# ai-character-scope: realtime AI video pipelines for livestreaming
+# ai-livestream: realtime AI video pipelines for livestreaming
 
 Webcam in → AI-transformed video out → OBS virtual camera (`/dev/video10`) → TikTok etc. Several pipelines share
 one bar: **25–30 fps** and **< 2 s** input → output latency. The first pipeline is **character swap**: the person
@@ -34,7 +34,7 @@ Everything outside git (weights, clones, envs, secrets) is gitignored; paths are
 **Code**
 | Component | Source | Goes to | Used by | How to get it |
 |---|---|---|---|---|
-| This repo | `github.com/jordancoult/ai-character-scope`, default branch **`main`** (pre-merge tip tagged `main-pre-merge-2026-11-02`) | repo root (any folder name) | everything | `git clone git@github.com:jordancoult/ai-character-scope.git` |
+| This repo | `github.com/jordancoult/ai-livestream`, default branch **`main`** (pre-merge tip tagged `main-pre-merge-2026-11-02`) | repo root (any folder name) | everything | `git clone git@github.com:jordancoult/ai-livestream.git` |
 | Scope fork | `github.com/jordancoult/scope`, branch **`blackwell-realtime`** (pre-merge tip tagged `blackwell-realtime-pre-merge-2026-11-02`) | `scope/`, remote **`fork`**; `origin` = upstream `daydreamlive/scope` (never push there) | all local pipelines | [Local setup](README_QUICKSTART.md#full-local-setup) |
 | StreamDiffusionV2 fork | `github.com/jordancoult/StreamDiffusionV2`, branch `blackwell-realtime` (upstream `chenfengxu714/StreamDiffusionV2`) | `StreamDiffusionV2/` (own `.venv`; `ckpts/`, `wan_models/` symlink into `models/`) | standalone demo `start_sdv2_demo.sh` | [Local setup](README_QUICKSTART.md#full-local-setup) |
 | NVlabs LongLive | `github.com/NVlabs/LongLive` + `tools/longlive2/skip_clean.patch`; FourOverSix + sentencepiece in `longlive2/.deps` | `longlive2/` | LongLive 2.0 (standalone and Scope `longlive2`) | [tools/longlive2/README.md](tools/longlive2/README.md) |
@@ -85,7 +85,7 @@ machines), `hf_token` (HF token; read for the private artifacts, write to publis
 ## Quick start
 **Local** (Linux, NVIDIA driver ≥ 570): full steps in [README_QUICKSTART.md → Full local setup](README_QUICKSTART.md#full-local-setup).
 ```bash
-git clone git@github.com:jordancoult/ai-character-scope.git && cd ai-character-scope
+git clone git@github.com:jordancoult/ai-livestream.git && cd ai-livestream
 curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=$PWD/bin UV_NO_MODIFY_PATH=1 sh && source env.sh
 git clone -o fork -b blackwell-realtime git@github.com:jordancoult/scope.git scope
 (cd scope && uv sync && cd frontend && npm ci && npm run build)
