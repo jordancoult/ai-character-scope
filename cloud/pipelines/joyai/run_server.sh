@@ -38,4 +38,5 @@ export JOYOMNI_DIT_CKPT=${JOYOMNI_DIT_CKPT:-$JOYOMNI_CKPT_ROOT/JoyAI-Video-Edit/
 # our web-UI additions (memory panel: R-key reset, auto-reset setting); upstream file kept as index.html.orig
 HERE="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$HERE/webui/patch_webui.sh" ] && JOYAI_DATA=$W bash "$HERE/webui/patch_webui.sh" || true
+[ -f "$HERE/serverpatch/patch_server.py" ] && python "$HERE/serverpatch/patch_server.py" "$J"
 exec bash $J/deploy/run_server.sh "$@"

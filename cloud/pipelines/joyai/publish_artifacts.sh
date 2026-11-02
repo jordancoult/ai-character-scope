@@ -13,4 +13,6 @@ $HF upload "$REPO" "$W/wheels" joyai/wheels --repo-type model --include "*.whl" 
 for t in "$W"/cache/*.tar; do
   [ -f "$t" ] && $HF upload "$REPO" "$t" "joyai/cache/$(basename "$t")" --repo-type model --commit-message "joyai compile cache $(basename "$t" .tar)"
 done
+Y="$W/JoyAI-Video-Edit/deploy/deps/checkpoints/yolov8n.onnx"
+[ -f "$Y" ] && $HF upload "$REPO" "$Y" joyai/common/yolov8n.onnx --repo-type model --commit-message "YOLOv8n person detector (imgsz 320)"
 echo PUBLISH_DONE

@@ -48,6 +48,8 @@ artifacts() {
   if hfcli download "$ARTIFACTS_REPO" --repo-type model --include "joyai/*" --local-dir "$W/artifacts" >"$W/logs/artifacts.log" 2>&1; then
     cp -n "$W"/artifacts/joyai/wheels/*.whl "$W/wheels/" 2>/dev/null || true
     for t in "$W"/artifacts/joyai/cache/*.tar; do [ -f "$t" ] && cp -n "$t" "$W/cache/"; done
+    # YOLOv8n person detector (imgsz 320, for the web demo's full-body detection); upstream has no download
+    [ -f "$W/artifacts/joyai/common/yolov8n.onnx" ] && mkdir -p "$CK" && cp -n "$W/artifacts/joyai/common/yolov8n.onnx" "$CK/"
     ls "$W/wheels" "$W/cache"
     echo ARTIFACTS_DONE
   else
