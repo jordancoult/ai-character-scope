@@ -14,6 +14,78 @@ Real-time webcam → your character (VACE reference image) → vertical 9:16 720
 | OS / driver | Ubuntu 26.04, kernel 7.0, NVIDIA 580.178 (CUDA 13.0 driver) |
 | Stack | PyTorch 2.9.1 + cu128, cuDNN 9.17, Triton 3.5.1, flash-attn 2.8.3, SageAttention 2 |
 
+## Full local setup
+
+Linux, NVIDIA driver ≥ 570 (CUDA 12.8-capable), Node.js + npm, ffmpeg. Clone anywhere, under any folder name:
+every script derives the repo root from its own location (`env.sh` exports it as `$AICS_ROOT`). Where each
+component comes from: [README.md → Components](README.md#components-and-where-they-come-from).
+
+```bash
+git clone git@github.com:jordancoult/ai-character-scope.git   # branch main; optional: add a target folder, any name works
+cd ai-character-scope
+curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=$PWD/bin UV_NO_MODIFY_PATH=1 sh
+source env.sh
+
+# Patched forks (branch blackwell-realtime). Remote "fork" = ours; "origin" = upstream (read-only, never push)
+git clone -o fork -b blackwell-realtime git@github.com:jordancoult/scope.git scope
+git -C scope remote add origin https://github.com/daydreamlive/scope.git
+git clone -o fork -b blackwell-realtime git@github.com:jordancoult/StreamDiffusionV2.git StreamDiffusionV2
+git -C StreamDiffusionV2 remote add origin https://github.com/chenfengxu714/StreamDiffusionV2.git
+(cd scope && uv sync && cd frontend && npm ci && npm run build)
+
+# Virtual camera (once)
+sudo apt install v4l2loopback-dkms v4l-utils pulseaudio-utils ffmpeg
+echo 'options v4l2loopback devices=1 video_nr=10 card_label="AI_Scope_Cam" exclusive_caps=1' | sudo tee /etc/modprobe.d/v4l2loopback.conf
+echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf && sudo modprobe v4l2loopback
+```
+
+Run: `CHARACTER_REF=path/to/character.png PROMPT="describe the character" ./start_scope.sh --bridge`,
+then open the slider at http://127.0.0.1:8090 and add **AI_Scope_Cam** + **AI_Character_Mic** in OBS.
+Character art, test clips and model weights are not in this repo (`assets/`, `models/` are git-ignored).
+
+### Models
+
+All into `./models` (gitignored). Scope also fetches its `daydreamlive/*` artifacts by itself when a pipeline
+loads; the commands below make it explicit and cover the extras.
+
+```bash
+HF="uvx --from huggingface_hub[cli] hf download"
+# Shared by every Scope Wan pipeline + StreamDiffusionV2 (~15 GB)
+$HF daydreamlive/Wan2.1-T2V-1.3B config.json Wan2.1_VAE.pth --local-dir models/Wan2.1-T2V-1.3B
+$HF daydreamlive/Wan2.1-T2V-1.3B --include 'google/*' --local-dir models/Wan2.1-T2V-1.3B
+$HF daydreamlive/WanVideo_comfy config.json umt5-xxl-enc-fp8_e4m3fn.safetensors Wan2_1-VACE_module_1_3B_bf16.safetensors --local-dir models/WanVideo_comfy
+$HF daydreamlive/Autoencoders config.json taew2_1.pth lighttaew2_1.pth lightvaew2_1.pth --local-dir models/Autoencoders
+$HF daydreamlive/StreamDiffusionV2 config.json wan_causal_dmd_v2v/model.pt --local-dir models/StreamDiffusionV2
+$HF daydreamlive/Video-Depth-Anything-Small config.json video_depth_anything_vits.pth --local-dir models/Video-Depth-Anything-Small
+ln -f models/Autoencoders/taew2_1.pth models/taew2_1.pth
+ln -sfn StreamDiffusionV2/wan_causal_dmd_v2v models/wan_causal_dmd_v2v
+
+# LongLive family (MODEL=longlive / reward-forcing / memflow)
+$HF daydreamlive/LongLive-1.3B config.json models/longlive_base.pt models/lora.pt --local-dir models/LongLive-1.3B
+$HF daydreamlive/Reward-Forcing-T2V-1.3B config.json rewardforcing.pt --local-dir models/Reward-Forcing-T2V-1.3B
+$HF daydreamlive/MemFlow config.json base.pt lora.pt --local-dir models/MemFlow
+$HF zhuhz22/Causal-Forcing chunkwise/causal_forcing.pt causal-forcing++/framewise-2step.pt --local-dir models/Causal-Forcing
+$HF MeiGen-AI/OPSD-V checkpoints/opsdv_longlive_lora.pt --local-dir models/OPSD-V
+
+# Standalone StreamDiffusionV2 demo (full Wan2.1 1.3B; its T5 is reused by LongLive 2.0)
+$HF Wan-AI/Wan2.1-T2V-1.3B --local-dir models/sdv2/Wan2.1-T2V-1.3B
+mkdir -p StreamDiffusionV2/ckpts StreamDiffusionV2/wan_models
+ln -sfn ../../models/taew2_1.pth StreamDiffusionV2/ckpts/taew2_1.pth
+ln -sfn ../../models/StreamDiffusionV2/wan_causal_dmd_v2v StreamDiffusionV2/ckpts/wan_causal_dmd_v2v
+ln -sfn ../../models/sdv2/Wan2.1-T2V-1.3B StreamDiffusionV2/wan_models/Wan2.1-T2V-1.3B
+
+# Optional: style LoRAs (--lora path:scale) and Real-ESRGAN upscalers (bridge --upscale)
+$HF Alissonerdx/UltraWanComfy ultrawan_1k_comfy.safetensors --local-dir models/lora/ultrawan
+$HF AlekseyCalvin/HSToricColorT2VWan1.3B_v2_rank128LoRA_bySilverAgePoets HSTwan13LoRA2_000003750.safetensors --local-dir models/lora/hstoric
+$HF wookiekim/Wan2.1-T2V-1.3B-SOLACE adapter_model.safetensors adapter_config.json --local-dir models/lora/solace
+mkdir -p models/upscalers && for f in realesr-animevideov3.pth realesr-general-x4v3.pth; do
+  curl -sL -o models/upscalers/$f https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/$f; done
+```
+
+LongLive 2.0 (`models/LongLive-2.0-5B/`, plus the `longlive2/` clone): see
+[tools/longlive2/README.md](tools/longlive2/README.md). The optional Matrix-Game decoder used in its tests:
+`$HF Skywork/Matrix-Game-3.0 MG-LightVAE_v2.pth --local-dir models/LongLive-2.0-5B/Matrix-Game-3.0`.
+
 ## Summary of improvements
 
 | | Before | Now |
@@ -261,6 +333,7 @@ tools/  scope_bridge.py  upscalers.py  bench_scope.py  sweep_scope.sh  contact_s
         check_fused.py  thermal_watchdog.sh  gen_character_ref.py  *_microbench.py
 assets/ character_sheet.png  char_front.png  char_face.png  portrait_clip.mp4 (+ long loops)  ref_char*.png
 models/ Wan2.1-T2V-1.3B  WanVideo_comfy  Autoencoders  StreamDiffusionV2  Video-Depth-Anything-Small  upscalers  sdv2/
-scope/  StreamDiffusionV2/  bench/ (results.jsonl + sample videos)
+        LongLive-1.3B  LongLive-2.0-5B  Reward-Forcing-T2V-1.3B  MemFlow  Causal-Forcing  OPSD-V  lora/
+scope/  StreamDiffusionV2/  longlive2/  bench/ (results.jsonl + sample videos)  cloud/ (cloud pipelines)
 ```
 Disk ~46 GB. Nothing outside the workspace (HF/torch/uv/npm/Scope caches all redirected by `env.sh`).
