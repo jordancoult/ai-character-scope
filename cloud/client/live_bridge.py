@@ -44,7 +44,8 @@ p.add_argument("--out-size", default=None, help="output WxH after resize (defaul
 p.add_argument("--ref", required=True)
 p.add_argument("--prompt", required=True)
 p.add_argument("--portrait", action="store_true", help="480x840 (9:16) instead of 840x480")
-p.add_argument("--fps", type=float, default=30, help="camera send rate")
+p.add_argument("--fps", type=float, default=26, help="camera send rate (JoyAI on an RTX 5090 outputs ~25-26 fps; "
+               "frames above that are dropped by the server anyway)")
 p.add_argument("--play-fps", type=float, default=25, help="playout rate (set near the server's output fps)")
 p.add_argument("--buffer", type=int, default=6, help="frames queued before playout starts; also the queue target")
 p.add_argument("--max-buffer", type=int, default=20, help="drop oldest frames above this queue length")
@@ -105,6 +106,9 @@ class Source:
 class Sink:
     def __init__(self, path, w, h):
         ow, oh = map(int, args.out_size.split("x")) if args.out_size else (w, h)
+        if (oh > ow) != (h > w):  # keep the output in the session's orientation (portrait vs landscape)
+            print(f"[bridge] --out-size {ow}x{oh} doesn't match the {w}x{h} session; using {oh}x{ow}", flush=True)
+            ow, oh = oh, ow
         vf = f"scale={ow}:{oh}:flags=lanczos" if (ow, oh) != (w, h) else "null"
         if path == "ffplay":
             self.p = subprocess.Popen(["ffplay", "-loglevel", "error", "-f", "rawvideo", "-pixel_format", "bgr24",
