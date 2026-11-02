@@ -38,7 +38,8 @@ import websockets
 
 p = argparse.ArgumentParser()
 p.add_argument("--url", default="ws://127.0.0.1:18080/ws")
-p.add_argument("--input", default="/dev/video0", help="v4l2 device, a video file, or an http(s) URL to a video "
+p.add_argument("--input", default="/dev/video0", help="v4l2 device, a video file, an http(s) URL to a video, or 'web' "
+               "(prompts you to paste a URL at start) "
                "(downloaded once to cloud/client/.cache; played in real time, looped)")
 p.add_argument("--input-size", default="1280x720", help="capture size for v4l2 devices")
 p.add_argument("--output", default="/dev/video10", help="v4l2loopback device, .mp4 file or 'ffplay' (a window)")
@@ -304,6 +305,10 @@ class FaceFixer:
 
 
 async def main():
+    if args.input == "web":  # ask for the URL interactively (paste + Enter)
+        args.input = input("[bridge] paste the video URL and press Enter: ").strip().strip('"').strip("'")
+        if not args.input.startswith(("http://", "https://")):
+            raise SystemExit(f"[bridge] not an http(s) URL: {args.input!r}")
     args.input, args.ref = fetch(args.input), fetch(args.ref)
     ref = None
     if args.ref:
