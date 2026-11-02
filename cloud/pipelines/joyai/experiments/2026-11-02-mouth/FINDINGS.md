@@ -19,3 +19,9 @@ Conclusion: JoyAI (2-step, ckpt face++) transfers almost no lip motion; the mout
 is barely correlated. Not a delay (lag search), not the reference (D), not steps (E). Adopted C (freeze off in the
 live bridge, mouth sentence in `prompts/*.txt`) as a small free gain. Real fix: a face pass after generation
 (lip/expression retargeting from the input face) — see `cloud/facefix/`.
+| F | C + `max_temporal_ids: 4` (shorter temporal window) | 0.21 | 0.25 @ 13 | 0.28 | 24.9 |
+| G | C settings, **G-Star** ref, talking close-up | 0.03 | 0.07 @ 9 | 0.62 | 24.1 |
+
+G-Star close-up (`sbs_G.jpg`): crisp cartoon face (good quality at this framing); the mouth opens/closes (0.6× the
+input's motion) but out of sync. **MediaPipe detects G-Star's face in 93 % of frames**, so landmark-based
+lip/expression retargeting can target him too, not only human refs.
