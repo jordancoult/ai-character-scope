@@ -9,7 +9,7 @@ Two terminals: one runs the AI, one shows you the result. Keep the laptop plugge
 **My settings (what looks best so far):** preset **20** (pose-tracked with depth, ~16 FPS), **fixed** noise, **no reference image**, this prompt:
 
 ```bash
-cd ~/personal/ai-character-scope
+cd ai-character-scope   # your clone (any folder name/location)
 SCOPE_FUSED_KV=0 PRESET=20 PROMPT="swedish lady with blonde hair, black thin frame glasses" NO_AUDIO=1 ./start_scope.sh --bridge
 ```
 

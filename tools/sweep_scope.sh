@@ -1,7 +1,7 @@
 #!/bin/bash
 # Runs bench_scope.py over a set of configs, cooling down between runs.
 # Results append to bench/results.jsonl
-W="$HOME/personal/ai-character-scope"; source "$W/env.sh"; cd "$W"
+W="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; source "$W/env.sh"; cd "$W"
 cool() { while [ "$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader)" -gt 65 ] || [ $(( $(cat /sys/class/thermal/thermal_zone*/temp | sort -n | tail -1) / 1000 )) -gt 80 ]; do sleep 5; done; }
 while read -r tag rest; do
   [ -z "$tag" ] && continue

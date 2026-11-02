@@ -1,5 +1,6 @@
 # Source this: keeps every cache/tool inside the workspace.
-export AICS_ROOT="$HOME/personal/ai-character-scope"
+# Repo root = this file's folder, so the clone can live anywhere under any name.
+export AICS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$AICS_ROOT/bin:$PATH"
 export HF_HOME="$AICS_ROOT/.cache/huggingface"
 export TORCH_HOME="$AICS_ROOT/.cache/torch"

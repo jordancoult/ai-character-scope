@@ -4,7 +4,7 @@
 #
 # Env overrides: STEP=1|2 (1 = faster, default), PORT=7860
 set -u
-W="$HOME/personal/ai-character-scope"
+W="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # repo root (this script's folder)
 source "$W/env.sh"
 cd "$W/StreamDiffusionV2"
 

@@ -2,7 +2,7 @@
 # End-to-end latency test: fresh Scope server + bridge streaming assets/latency_flash.mp4
 # (white flash every 5 s). Prints per-flash latency, summary, output FPS and peak temps.
 # Usage: tools/latency_test.sh [tag] [extra bridge args...]   (~2 min incl. startup)
-W="$HOME/personal/ai-character-scope"; source "$W/env.sh"; cd "$W"
+W="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; source "$W/env.sh"; cd "$W"
 TAG="${1:-run}"; shift
 LOG=".tmp/latency_$TAG.log"
 # Precise cleanup: whatever holds the Scope port (name-matching could hit the caller's shell)

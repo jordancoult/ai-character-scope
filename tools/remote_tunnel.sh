@@ -5,12 +5,12 @@
 #   REMOTE_TOKEN=mytoken tools/remote_tunnel.sh
 #
 # Uses a free Cloudflare "quick tunnel" (no account, no API key): cloudflared is downloaded into
-# ~/personal/ai-character-scope/bin/ on first use (no sudo). The bridge must be started with the SAME
+# <repo>/bin/ on first use (no sudo). The bridge must be started with the SAME
 # token (REMOTE_TOKEN=... ./start_scope.sh --bridge); the script refuses to expose a bridge that answers
 # without a token, and stops the tunnel if one shows up later. Ctrl+C stops the tunnel.
 # Env: CONTROL_PORT=8090 (bridge --control-port), CLOUDFLARED=path (use another binary).
 set -u
-W="$HOME/personal/ai-character-scope"
+W="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"  # repo root (parent of tools/)
 PORT="${CONTROL_PORT:-8090}"
 BIN="${CLOUDFLARED:-$W/bin/cloudflared}"
 LOG_DIR="$W/.tmp"; mkdir -p "$LOG_DIR"
@@ -38,7 +38,7 @@ case "$(status)" in
   401) echo "[tunnel] bridge on :$PORT requires a token: good (make sure it is this run's token)" ;;
   000) echo "[tunnel] nothing on :$PORT yet. Start the bridge in another terminal with this token:"
        echo
-       echo "    cd ~/personal/ai-character-scope && REMOTE_TOKEN=$REMOTE_TOKEN ./start_scope.sh --bridge"
+       echo "    cd $W && REMOTE_TOKEN=$REMOTE_TOKEN ./start_scope.sh --bridge"
        echo "    (or: REMOTE_TOKEN=\$(cat .tmp/remote_token) ./start_scope.sh --bridge)"
        echo ;;
   200) echo "[tunnel] REFUSING: the bridge on :$PORT answers WITHOUT a token, so anyone with the link could control it."

@@ -2,7 +2,8 @@
 # contact_sheet.sh out.jpg "t1 t2 t3" label1=video1.mp4 label2=video2.mp4 ...
 # Rows = timestamps, columns = videos; each tile scaled to 240x426 (9:16) with a label.
 out=$1; times=$2; shift 2
-tmp=$(mktemp -d -p "$HOME/personal/ai-character-scope/.tmp"); rows=()
+W="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"  # repo root (parent of tools/)
+tmp=$(mktemp -d -p "$W/.tmp"); rows=()
 for t in $times; do
   cols=()
   for lv in "$@"; do

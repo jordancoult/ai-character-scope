@@ -25,7 +25,7 @@
 #   The tunnel refuses to run (or stops) if the bridge answers without a token. Ctrl+C stops the tunnel.
 #   Output preview without a tunnel: http://127.0.0.1:8090/remote (also /out.jpg, /out.mjpg).
 set -u
-W="$HOME/personal/ai-character-scope"
+W="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # repo root (this script's folder)
 source "$W/env.sh"
 cd "$W"
 

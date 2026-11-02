@@ -1,7 +1,7 @@
 # AI Character Scope — Quickstart
 
 Real-time webcam → your character (VACE reference image) → vertical 9:16 720×1280 → OBS, on an ASUS ROG Zephyrus G16 GU605CW
-(RTX 5080 Laptop 16 GB, Blackwell `sm_120`). Everything lives in `~/personal/ai-character-scope/`.
+(RTX 5080 Laptop 16 GB, Blackwell `sm_120`). Everything lives in the repo folder (clone it anywhere; paths below are relative to it).
 
 ## Tested hardware
 
@@ -42,7 +42,7 @@ Still to do: real webcam + OBS test · cone-shaped head · optional GPU clock lo
 Just want to start it? See [START_HERE.md](START_HERE.md).
 
 ```bash
-cd ~/personal/ai-character-scope
+cd ai-character-scope   # your clone (any folder name/location)
 
 # Live: webcam -> character -> /dev/video10 "AI_Scope_Cam" (720x1280) + delayed mic "AI_Character_Mic"
 CHARACTER_REF=assets/char_front.png \

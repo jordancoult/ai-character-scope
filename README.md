@@ -35,11 +35,11 @@ artifacts in the private HF repo `JordanCo/ai-livestream-artifacts`.
 
 ## Setup (Linux, NVIDIA driver ≥ 570, CUDA 12.8-capable)
 
-Scripts assume the workspace lives at `~/personal/ai-character-scope` (edit `env.sh` / scripts to move it).
+Clone anywhere, under any folder name: every script derives the repo root from its own location (`env.sh` exports it as `$AICS_ROOT`).
 
 ```bash
-git clone git@github.com:jordancoult/ai-character-scope.git ~/personal/ai-character-scope
-cd ~/personal/ai-character-scope
+git clone git@github.com:jordancoult/ai-character-scope.git   # optional: add a target folder, any name works
+cd ai-character-scope
 curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=$PWD/bin UV_NO_MODIFY_PATH=1 sh
 source env.sh
 

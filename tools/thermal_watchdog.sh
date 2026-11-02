@@ -8,8 +8,9 @@
 #                                                 (max operating ~88 C, slowdown ~90 C); Intel throttles at 105 C,
 #                                                 so brief CPU spikes to 100-105 are within spec
 GPU_LIMIT="${1:-87}"; CPU_LIMIT="${2:-100}"; MAX_STRIKES="${3:-2}"
-LOG="$HOME/personal/ai-character-scope/.tmp/thermal.log"
-PIDFILE="$HOME/personal/ai-character-scope/.tmp/thermal_watchdog.pid"
+W="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"  # repo root (parent of tools/)
+LOG="$W/.tmp/thermal.log"
+PIDFILE="$W/.tmp/thermal_watchdog.pid"
 echo $$ > "$PIDFILE"
 strikes=0
 while true; do
