@@ -114,7 +114,7 @@ SCOPE_FUSED_KV=0 PRESET=20 PROMPT="swedish lady with blonde hair, black thin fra
       <h3 class="optb">Option B: LongLive <span class="tag">experimental</span></h3>
       <p>NVIDIA's LongLive model. It looked more stable and realistic in your test, with about <b>1.4 s</b> of latency. Pick A or B, not both.</p>
       <div class="code"><button class="copy">Copy</button>cd ~/personal/ai-character-scope
-MODEL=longlive PROMPT="swedish lady with blonde hair, black thin frame glasses" NO_AUDIO=1 ./start_scope.sh --bridge</div>
+MODEL=longlive CHARACTER_REF=assets/blonde-gamer-girl.png PROMPT="swedish lady with blonde hair, black thin frame glasses" NO_AUDIO=1 ./start_scope.sh --bridge</div>
       <p class="note">LongLive always uses <b>random</b> noise, because fixed noise builds up artifacts. Depth tracking is off, so presets 20 and 15 run without depth.
         <code>SCOPE_FUSED_KV=0</code> isn't needed here, because LongLive turns that patch off by itself. Steps 2&ndash;4 below work the same way.</p>
     </div>
@@ -163,9 +163,26 @@ MODEL=longlive PROMPT="swedish lady with blonde hair, black thin frame glasses" 
       <tr><td><code>CAMERA=/dev/video0</code></td><td>Which webcam to use</td></tr>
       <tr><td><code>MODEL=longlive</code></td><td>Experimental LongLive model (random noise only, see <code>README_QUICKSTART.md</code>)</td></tr>
       <tr><td><code>SCOPE_FUSED_KV=0</code></td><td>Turns off one speed patch, which you normally run with. About 9% slower, but slightly more realistic. With it on, there's a bit less flicker and invented motion.</td></tr>
+      <tr><td><code>ORIENTATION=landscape</code></td><td>16:9 landscape instead of 9:16 portrait</td></tr>
+      <tr><td><code>INPUT_IMAGE=assets/x.png</code></td><td>No camera: animates this still image (it's also used as the reference image unless you set <code>CHARACTER_REF</code>). Uses random noise at 0.95 by default; raise the noise slider for more motion.</td></tr>
       <tr><td><code>NO_AUDIO=1</code></td><td>Skips creating the delayed virtual mic</td></tr>
     </table>
     <p class="note">Reference images go in <code>assets/</code>. Frame them the way you sit in front of the camera.</p>
+  </details>
+
+  <details>
+    <summary>Remote testing (watch and control from your phone)</summary>
+    <p>A free Cloudflare quick tunnel gives you a temporary <code>https://….trycloudflare.com</code> link. You don't need an account. The control page is locked with a random token.</p>
+    <p><b>Terminal A:</b> start the tunnel. It downloads <code>cloudflared</code> into <code>bin/</code> the first time and prints a token.</p>
+    <div class="code"><button class="copy">Copy</button>cd ~/personal/ai-character-scope && tools/remote_tunnel.sh</div>
+    <p><b>Terminal B:</b> start the bridge with that token, plus your usual settings:</p>
+    <div class="code"><button class="copy">Copy</button>cd ~/personal/ai-character-scope
+REMOTE_TOKEN=$(cat .tmp/remote_token) NO_AUDIO=1 ./start_scope.sh --bridge</div>
+    <p>On your phone, open the <code>…/remote?token=…</code> link that terminal A prints. It shows the live output at 12, 6 or 3 fps, the FPS and temperatures, and a link to the full control page. The token is stored as a cookie, so later visits work without it. Press <code>Ctrl+C</code> in terminal A to close the link.</p>
+    <p class="note">Anyone with the link can change the session or restart it, so treat it like a password. It changes every time you start the tunnel.
+      The tunnel won't start, and stops if it's already running, when the bridge answers without a token.
+      The stream uses about 7 Mbit/s at 12 fps (~3 GB per hour), so pick 3 fps on mobile data. Through the tunnel it adds roughly 0.2&ndash;0.5 s on top of the normal delay.
+      Locally, <code>http://127.0.0.1:8090/remote</code> shows the same viewer without a tunnel or token.</p>
   </details>
 
   <footer>More detail: <code>README_QUICKSTART.md</code></footer>

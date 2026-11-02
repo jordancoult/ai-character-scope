@@ -120,10 +120,41 @@ memory (12 latent frames, 3 per chunk). Same presets and controls page; depth pr
 
 - Its built-in LoRA is merged and the model converted to fp8 row-wise at load (bf16 + LoRA + VACE doesn't fit
   in 16 GB; torchao fp8 fails on it). ~21 FPS on the 24 preset, 12.9 GB VRAM. lighttae VAE (it expects
-  normalized latents); fused KV is turned off (its model can't take the fused prefix).
+  normalized latents). Fused KV is off by default for the LongLive family; since 2026-11-01 it works for
+  LongLive and Reward Forcing with `SCOPE_FUSED_KV=1` (bit-identical output, see the model status below).
 - Defaults to **random noise** (fixed noise piles up into confetti) and noise 0.9 (at 0.75 it barely changes the camera).
 - **Status:** clean with the noise-offset fix above (the sparkles were that offset). Fixed noise still piles up
   into artifacts on LongLive, so it stays on random noise.
+
+## Model status (2026-11-01): what runs locally and how fast
+
+All at 640×352 landscape on the desk stock clip, live through Scope + bridge, feedback off. Details and videos
+are in `experiments/`.
+
+| Model (`MODEL=`) | Setting | fps, depth off | fps, depth on | Notes |
+|---|---|---|---|---|
+| LongLive (`longlive`) | 1 step | 21.3 | 17.4 | stutter fix: 157 → 27 stutters/min |
+| LongLive | 3 steps, clean pass every 2nd | 13.4 | 10.1 (11.4 VACE hint reuse) | sharper |
+| Causal Forcing chunk-wise (`reward-forcing` + `SCOPE_RF_GENERATOR`) | 2 steps, fused + RoPE cache + clean every 2nd | **22.6** | 15.1 | best 2-step speed |
+| Causal Forcing chunk-wise | 1 step, fused + RoPE cache | **~26** | 17 | |
+| Causal Forcing++ frame-wise | 2 steps | | 9.4 | background glitches; skip |
+| LongLive 2.0 (`longlive2`, 5B NVFP4) | 2 steps, 1024×576, clean every 2nd | 13–15 in Scope | — | prompt-only (no camera); about 15 fps standalone |
+| OPSD-V LoRA (`SCOPE_LONGLIVE_LORA`) | on LongLive | same fps | | swaps LongLive's LoRA |
+
+Fast 2-step Causal Forcing (`experiments/2026-11-01-fused-ll/FINDINGS.md`):
+```bash
+MODEL=reward-forcing SCOPE_FUSED_KV=1 SCOPE_RF_ROPE_CACHE=1 \
+SCOPE_RF_GENERATOR=$PWD/models/Causal-Forcing/chunkwise/causal_forcing.pt SCOPE_RF_GENERATOR_KEY=generator \
+ORIENTATION=landscape BRIDGE_ARGS="--size 352 640" ./start_scope.sh --bridge
+# then on the page: Denoiser → Steps 2, Clean pass every 2nd chunk; depth off for 20+ fps
+```
+
+Limits found: cost is linear in model passes per chunk (about 230 ms per pass at 640×352). Depth/VACE adds 25–45 %.
+Reference-image identity is weak in the streaming 1.3B models. The next step is a rented cloud GPU
+(`experiments/2026-11-01-cloud-gpu-research.md`); the work lives in `cloud/`, separate from this local setup.
+
+Experiments index: `2026-10-31-dream-variants` (dream presets) · `2026-11-01-longlive2` (LongLive 2.0) ·
+`2026-11-01-ll1-speed` (smoothness, 3-step cost) · `2026-11-01-fused-ll` (fused clean pass, RoPE cache).
 
 ## Latency (camera frame in → character frame out, measured)
 
@@ -211,10 +242,16 @@ Scope (`scope/src/scope/core/pipelines/…`):
 5. `wan2_1/blocks/denoise.py`, `clean_kv_cache.py` — fused clean-KV refresh (`SCOPE_FUSED_KV`).
 6. `wan2_1/vace/models/causal_vace_model.py` — VACE hints for fused calls (new-chunk slice, zero-padded prefix).
 7. `streamdiffusionv2/depth_vace_block.py`, `video_depth_anything/gpu_depth.py` — all-GPU depth → VACE.
+8. `longlive/`, `reward_forcing/modules/causal_model.py` — fused-prefix attention (pre-eviction prefix keys);
+   Reward Forcing cached RoPE keys + fp32 RoPE (`SCOPE_RF_ROPE_CACHE`); generator/LoRA swaps (`SCOPE_RF_GENERATOR*`,
+   `SCOPE_LONGLIVE_LORA`); clean pass every Nth chunk (`clean_kv_every`), attention switch, VACE hint reuse.
+9. `longlive2/` — LongLive 2.0 as a Scope text-to-video pipeline (local port).
+10. `server/frame_processor.py`, `process.py` — input upload on a side stream; CPU uint8 output per chunk.
 StreamDiffusionV2: T5 CPU offload (`SDV2_TEXT_ENCODER_OFFLOAD`), torch 2.9.1/cu128 + cuDNN 9.17 overrides.
 
 Correctness checks: `tools/check_fused.py` compares patched vs stock outputs chunk by chunk (fused: 0.16 %
 mean diff at the first fused chunk with exact attention; ring: bit-identical until the cache fills).
+`tools/check_fused_ll.py` does the same for LongLive / Reward Forcing (fused: bit-identical, text and video mode).
 
 ## Layout
 

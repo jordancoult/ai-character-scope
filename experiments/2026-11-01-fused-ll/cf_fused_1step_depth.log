@@ -1,0 +1,18 @@
+[bridge] loading reward-forcing {'height': 352, 'width': 640, 'vae_type': 'lighttae', 'vace_enabled': True} ...
+[bridge] pipeline loaded
+[bridge] assets/webcam_7643311.mp4 -> Scope (640x352) -> experiments/2026-11-01-fused-ll/cf_fused_1step_depth.mp4 (640x352)
+[bridge] live controls: http://127.0.0.1:8091
+[bridge] preset -> 30 fps - fast (1 step)
+[bridge] params -> {'steps': 1, 'depth': 'on'}
+[camera] frames waiting in player queue: 30
+[bridge] output  13.5 fps (30 fps - fast (1 step))
+[camera] frames waiting in player queue: 30
+[bridge] output  17.8 fps (30 fps - fast (1 step))
+[camera] frames waiting in player queue: 31
+[bridge] output  17.2 fps (30 fps - fast (1 step))
+[camera] frames waiting in player queue: 31
+[bridge] output  17.1 fps (30 fps - fast (1 step))
+[camera] frames waiting in player queue: 28
+[bridge] output  16.8 fps (30 fps - fast (1 step))
+[bridge] output  16.9 fps (30 fps - fast (1 step))
+[smooth] frame gap median 58.5 ms, p95 62.2 ms, max 97 ms, stutters(>66ms) 10 / 376

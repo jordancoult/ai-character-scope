@@ -20,3 +20,4 @@ __pycache__/
 /longlive2/
 /backups/
 /wan_models
+.secrets/
