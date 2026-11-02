@@ -15,7 +15,11 @@ VC=$W/cache/$GPU
 LC=/root/jcache/$GPU
 if [ -z "${JOYOMNI_CACHE_ROOT:-}" ]; then
   mkdir -p "$LC"
-  [ -d "$VC" ] && [ ! -e "$LC/.seeded" ] && cp -a "$VC/." "$LC/" && touch "$LC/.seeded"
+  if [ ! -e "$LC/.seeded" ]; then
+    if [ -f "$VC.tar" ]; then tar -xf "$VC.tar" -C "$LC"        # fast path: one sequential read
+    elif [ -d "$VC" ]; then cp -a "$VC/." "$LC/"; fi            # legacy directory cache (slow)
+    touch "$LC/.seeded"
+  fi
   export JOYOMNI_CACHE_ROOT=$LC
 fi
 export JOYOMNI_SAGE_ATTN=${JOYOMNI_SAGE_ATTN:-1}
