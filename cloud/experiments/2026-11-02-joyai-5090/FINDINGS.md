@@ -35,3 +35,5 @@ Server output arrives in 8-frame bursts, so playout runs from a jitter buffer wi
 | adaptive, gain 0.02, target 8 | 0 / 0 | 1.18 / 1.22 s |
 | **adaptive, gain 0.05, target 6** | **0 / 0** | **1.04 / 1.07 s** |
 Glass-to-glass = capture on the laptop → frame shown by the player (network both ways + model + playout buffer).
+- **2-minute run** through the bridge (portrait, memory reset disabled): 3,104 frames played, 0 dropped / 0 repeated,
+  glass-to-glass 1.03 / 1.07 s; identity identical from start to end (`bridge_2min_strip.jpg`, one frame per 15 s).
