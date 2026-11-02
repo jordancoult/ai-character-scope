@@ -1,5 +1,9 @@
 # facefix: lip sync (and optional face restoration) as a post-process on the laptop GPU
 
+**Round 2 summary (current recommendation):** human refs → `--facefix swap` (HyperSwap face swap of the real face,
+lower face pasted: real teeth/tongue/jaw, no warping, ~24 ms/frame); cartoon refs (G-Star) → `--facefix rel`
+(LivePortrait; still the only option that keeps a cartoon face). Details in "Round 2" below.
+
 JoyAI-Video-Edit barely moves the generated mouth with the speaker's (lip-gap correlation 0.25 for a human ref,
 0.03 for G-Star, see `../pipelines/joyai/experiments/2026-11-02-mouth/`). facefix fixes that on the laptop's idle
 RTX 5080 Laptop, between "frame received" and "frame played": **LivePortrait** re-renders the lower half of the
@@ -73,6 +77,42 @@ The gain at stream scale is modest and none of the networks fit next to the lip 
 (25 + 30 ms). Use `--restore sharpen` if you want something, GFPGAN only with a human ref once TensorRT frees GPU
 time. CodeFormer is non-commercial (below).
 
+## Round 2 (after the first live test: "unstable, warped, artifacts with the mouth open")
+Methods are modules with the same interface (`analyze_input` / `analyze` / `render`, gating and fades shared):
+`facefix.py` (common + LivePortrait `FacePass`, `--method lp`), `swap.py` (`SwapPass`, `--method swap`).
+Evidence in `experiments/2026-11-02-round2/` (sheets + preview-safe `review_*.mp4`: input | JoyAI | refined face
+close-ups). Open-mouth stress test = the frames with the widest-open input mouth (`review.py --by-jaw`).
+
+**Diagnosis of the LP artifacts:** they come from the *generator*, not the paste: with the mouth open LivePortrait
+has to invent the mouth interior, and at `--lp-size 128` (256 px render) teeth become a white smear
+(`sheet_lp_C_openmouth.jpg`). 256 is better but 58 ms/frame; TensorRT (FasterLivePortrait) is not possible on this
+laptop right now: no CUDA compiler for its grid-sample-3D plugin and no TensorRT libraries (+1.5–3 GB; disk is at
+99 %). Stability fixes added for all methods: One-Euro filter on the landmarks (`--euro-cutoff 1.5 --euro-beta 0.3`),
+faster fades for swap, LAB colour/lighting match, `--mask mouth` (ellipse around the mouth only) for LP.
+
+| Candidate | Open mouth | Head turn / hands / glasses | G-Star | Human identity (ArcFace cos to ref, JoyAI → refined)* | Lip-gap corr (C clip) | ms/frame (GPU thread) |
+|---|---|---|---|---|---|---|
+| LP abs, 128 (round 1) | teeth smeared | ok, gated | n/a | — | 0.96 | 26 |
+| LP rel, 128, One-Euro (G-Star) | big grin opens with teeth; `mouth` mask ≈ `lower` | ok, gated | **works** (0.69; mouth mask 0.63) | — | — | 25 |
+| **Swap (HyperSwap 256), lower-face mask** | **real teeth/tongue, natural** (`sheet_swap_lower_C_openmouth.jpg`) | works; hand/turn gates fade it; glasses NOT carried over | **unusable** (humanizes, purple blotches: `sheet_swap_restore_gstar.jpg`) | 0.525 → 0.563 | **0.95** | **24** |
+| Swap, inner-face mask | same mouth; also real eyes/brows | carries the user's **glasses** onto the character (`sheet_swap_scen_human.jpg`); double mouth during fades | unusable | 0.525 → 0.748 | 0.95 | 24 |
+| InSwapper 128 (instead of HyperSwap) | blurrier | same | unusable | 0.525 → 0.762 | 0.96 | 22 |
+| + GFPGAN 1.4 on the swap | sharper, more "generic" face | same | — | 0.652 (identity drops) | 0.94 | 57 → too slow |
+| + CodeFormer w=0.7 on the swap | similar | same | — | 0.634 | 0.94 | 83 → too slow |
+| MuseTalk (audio-driven) | not tested: our clips have no audio track and the bridge has no audio path; ~4.5 GB weights (disk) | | | | | |
+
+\* the cosine uses the same ArcFace that conditions the swapper, so it flatters the swap; compare rows, not absolutes.
+
+**Verdict:** swap with the lower-face mask for human refs (real mouth interior, identity/eyes stay JoyAI's, no
+glasses transfer, fast); LP `rel` stays for G-Star; restorers cost 30–60 ms and lower identity, so they're off.
+Swap needs MediaPipe to find the real face (it does through glasses); fades with hand-over-mouth/turns as before.
+
+Live (real server, 45 s, test_face_landscape, 30 fps in, 25 fps out), round-1 LP: human `abs` 1000 frames played,
+0 dropped / 0 repeated, glass-to-glass 915 / 948 ms (median / p95), facefix in time 99.3 %, lip-gap 0.94; G-Star
+`rel` 0 / 0, 930 / 1002 ms, 98.8 %, lip-gap 0.74 (a first G-Star run hit server flow drops: 293 repeats, 0.52).
+Swap through the bridge (mock server): 25 ms render, in time 89 % in a 10 s run (start-up misses). A live swap run on
+the real server is still pending: the server stopped accepting sessions during round 2.
+
 ## Licenses (for the record; the project is academic, so non-commercial models are allowed)
 | Component | License | OK? |
 |---|---|---|
@@ -128,7 +168,7 @@ websockets); with the flag off the bridge still runs from `cloud/.venv` (facefix
 cloud/facefix/.venv/bin/python cloud/client/live_bridge.py --url ws://127.0.0.1:18080/ws \
   --input /dev/video0 --output ffplay --portrait --out-size 720x1260 \
   --ref assets/char_front.png --prompt "$(cat cloud/pipelines/joyai/prompts/gstar.txt)" --facefix rel
-# human ref: --ref assets/blonde-gamer-girl.png --prompt "$(cat cloud/pipelines/joyai/prompts/human_blonde.txt)" --facefix abs
+# human ref: --ref assets/blonde-gamer-girl.png --prompt "$(cat cloud/pipelines/joyai/prompts/human_blonde.txt)" --facefix swap
 ```
 Flags: `--facefix-size 128|256`, `--facefix-restore none|sharpen|gfpgan|codeformer`, `--facefix-extra '<facefix.py
 flags>'` (e.g. `--yaw-hi 45 --no-hands`), `--review out.mp4` (input | JoyAI | played, ≤ 1920 wide),

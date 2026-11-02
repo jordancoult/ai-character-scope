@@ -361,6 +361,33 @@ def lower_ramp(n, lo=0.42, hi=0.55):
     return np.clip((y - lo) / (hi - lo), 0, 1)[:, None] * np.ones((1, n), np.float32)
 
 
+class OneEuro:
+    """One-Euro filter on arrays (landmarks): smooths jitter at rest, follows fast moves without lag."""
+
+    def __init__(self, min_cutoff=1.0, beta=0.05, d_cutoff=1.0, fps=25.0):
+        self.mc, self.beta, self.dc, self.dt = min_cutoff, beta, d_cutoff, 1.0 / fps
+        self.x = self.dx = None
+
+    def alpha(self, cutoff):
+        r = 2 * np.pi * cutoff * self.dt
+        return r / (r + 1)
+
+    def __call__(self, x, scale=1.0):
+        """scale: normalise speed (e.g. by face size) so the filter is resolution independent."""
+        if x is None:
+            self.x = self.dx = None
+            return None
+        if self.x is None or x.shape != self.x.shape:
+            self.x, self.dx = x.copy(), np.zeros_like(x)
+            return x
+        dx = (x - self.x) / self.dt / scale
+        self.dx = self.dx + self.alpha(self.dc) * (dx - self.dx)
+        cutoff = self.mc + self.beta * np.abs(self.dx)
+        a = self.alpha(cutoff)
+        self.x = self.x + a * (x - self.x)
+        return self.x.copy()
+
+
 class FacePass:
     """Input (real) frame + JoyAI output frame -> refined output frame.
 
@@ -380,6 +407,7 @@ class FacePass:
         self.mask = (self.rt.face_mask if self.rt else np.ones((g, g), np.float32)) * \
             (lower_ramp(g) if a.mask == "lower" else 1.0)
         self.weight, self.rect, self.last_in, self.rin = 0.0, None, None, None   # last_in: (in256, rin) for fading out on loss
+        self.euro_in, self.euro_out = OneEuro(a.euro_cutoff, a.euro_beta), OneEuro(a.euro_cutoff, a.euro_beta)
 
     def smooth_rect(self, rect):
         if rect is None or self.rect is None:
@@ -406,6 +434,15 @@ class FacePass:
         t0 = time.perf_counter()
         fi, hand = pre if pre is not None else self.analyze_input(I)
         fo = self.lm_out(O, near=fi.center if fi is not None else None)
+        if a.euro_cutoff > 0:                              # One-Euro smoothing of the landmarks (jitter -> shimmer)
+            if fi is not None:
+                fi = Face(self.euro_in(fi.pts, fi.size), fi.jaw, (fi.yaw, fi.pitch, fi.roll))
+            else:
+                self.euro_in(None)
+            if fo is not None:
+                fo = Face(self.euro_out(fo.pts, fo.size), fo.jaw, (fo.yaw, fo.pitch, fo.roll))
+            else:
+                self.euro_out(None)
 
         gates = {"in_face": fi is not None}
         if fi is not None:
@@ -440,7 +477,8 @@ class FacePass:
                     jaw_in=fi.jaw if fi is not None else np.nan, jaw_out=fo.jaw if fo is not None else np.nan)
         info["ms_cpu"] = 1000 * (time.perf_counter() - t0)
         rpts = fo.pts if fo is not None else (fi.pts if fi is not None else None)
-        return {"O": O, "info": info, "weight": self.weight, "rect": None if self.rect is None else self.rect.copy(),
+        return {"O": O, "I": I, "fi_pts": fi.pts if fi is not None else None,
+                "fo_pts": fo.pts if fo is not None else None, "info": info, "weight": self.weight, "rect": None if self.rect is None else self.rect.copy(),
                 "cin": self.last_in, "pts": rpts}
 
     def render(self, st):
@@ -459,6 +497,8 @@ class FacePass:
                                cv2.COLOR_BGR2RGB) if self.rt.lp != 256 else None
             gen = cv2.cvtColor(self.rt(cin, c256, clp), cv2.COLOR_RGB2BGR).astype(np.float32)
             mk = self.mask
+            if a.mask == "mouth" and (st["fo_pts"] is not None or st["fi_pts"] is not None):
+                mk = self.mouth_mask(st["fo_pts"] if st["fo_pts"] is not None else st["fi_pts"], Mo, g)
             ws = mk.sum() + 1e-6                              # colour-match the re-rendered face to the original
             gen += ((cg * mk[..., None]).sum((0, 1)) - (gen * mk[..., None]).sum((0, 1))) / ws
             Minv = cv2.invertAffineTransform(Mo)
@@ -482,6 +522,20 @@ class FacePass:
         return self.render(self.analyze(I, O))
 
     @staticmethod
+    def mouth_mask(pts, Mo, g):
+        """Feathered ellipse around the mouth (lips + 60 % margin, down to the chin) in crop coords: only the mouth
+        is replaced, cheeks/jaw stay JoyAI's (less visible warping)."""
+        p = pts[[61, 291, 0, 17, 13, 14, 152]] @ Mo[:, :2].T + Mo[:, 2]
+        c = p[:6].mean(0)
+        mw = np.linalg.norm(p[1] - p[0])
+        mh = max(np.linalg.norm(p[3] - p[2]), 0.35 * mw)
+        m = np.zeros((g, g), np.float32)
+        ang = np.degrees(np.arctan2(p[1, 1] - p[0, 1], p[1, 0] - p[0, 0]))
+        cv2.ellipse(m, (int(c[0]), int(c[1] + 0.15 * mh)), (int(0.8 * mw), int(0.5 * mh + 0.35 * mw)), ang, 0, 360,
+                    1.0, -1)
+        return cv2.GaussianBlur(m, (0, 0), 0.12 * mw + 1)
+
+    @staticmethod
     def roi(Minv, g, w, h):
         c = np.array([[0, 0, 1], [g, 0, 1], [0, g, 1], [g, g, 1]], np.float32) @ Minv.T
         x0, y0 = np.clip(np.floor(c.min(0)).astype(int), 0, [w - 1, h - 1])
@@ -489,7 +543,24 @@ class FacePass:
         return x0, y0, max(x1, x0 + 1), max(y1, y0 + 1)
 
 
+def make_pass(a):
+    """The face pass selected by --method (all share analyze_input / analyze / render)."""
+    if a.method == "swap":
+        from swap import SwapPass
+        return SwapPass(a)
+    return FacePass(a)
+
+
 def add_args(p):
+    p.add_argument("--method", default="lp", choices=["lp", "swap"],
+                   help="lp: LivePortrait lip retargeting on the generated face (any ref, incl. cartoons); swap: face "
+                        "swap of the real face with the reference identity, composited into the output (human refs)")
+    p.add_argument("--ref", default=None, help="reference image (identity) for --method swap")
+    p.add_argument("--swap-model", default="hyperswap", choices=["hyperswap", "inswapper"])
+    p.add_argument("--swap-mask", default="lower", choices=["face", "lower"],
+                   help="swap: paste below the nose (default: keeps JoyAI's eyes, no glasses carried over) or the inner face")
+    p.add_argument("--euro-cutoff", type=float, default=1.5, help="One-Euro min cutoff (Hz) on landmarks, 0 = off")
+    p.add_argument("--euro-beta", type=float, default=0.3)
     p.add_argument("--region", default="lip", choices=["none", "lip", "eyes", "lip+eyes", "exp"])
     p.add_argument("--lip-mode", default="abs", choices=["abs", "rel"],
                    help="abs: input lips replace the output's (human refs); rel: input's mouth motion is added to "
@@ -504,7 +575,8 @@ def add_args(p):
     p.add_argument("--mapped-weight", type=float, default=0.7, help="effect weight when the box is mapped from input")
     p.add_argument("--max-offset", type=float, default=0.5, help="output face must be within this many face sizes "
                    "of the input face, else the input box is used")
-    p.add_argument("--mask", default="lower", choices=["face", "lower"], help="paste the whole face or the lower half")
+    p.add_argument("--mask", default="lower", choices=["face", "lower", "mouth"],
+                   help="lp: paste the whole face, the lower half, or a feathered ellipse around the mouth")
     p.add_argument("--yaw-lo", type=float, default=25), p.add_argument("--yaw-hi", type=float, default=40)
     p.add_argument("--pitch-lo", type=float, default=20), p.add_argument("--pitch-hi", type=float, default=35)
     p.add_argument("--no-hands", dest="hands", action="store_false", help="skip the hand-over-mouth check")
@@ -541,6 +613,7 @@ def main():
     p.add_argument("--seq-json", default=None, help="joyai_client --stats JSON with source_seq: exact pairing "
                    "(output i was made from input source_seq[i]-1); overrides --align")
     p.add_argument("--max-frames", type=int, default=0)
+    p.add_argument("--eval-id", action="store_true", help="swap: ArcFace cosine to the ref every 5th frame")
     p.add_argument("--pipeline", action="store_true", help="overlap analyze (CPU, next frame) with render (GPU) "
                    "in two threads, like the live bridge would; reports wall-clock fps")
     p.add_argument("--fps", type=float, default=25)
@@ -555,7 +628,7 @@ def main():
         a.align = "source_seq"
     else:
         idx = align_dtw(ins, outs) if a.align == "dtw" else align_linear(len(ins), len(outs))
-    fp = FacePass(a)
+    fp = make_pass(a)
     h, w = outs[0].shape[:2]
     wr = Writer(a.out, w, h, a.fps)
     sbs = Writer(a.sbs, w * 3, h, a.fps) if a.sbs else None
@@ -576,6 +649,7 @@ def main():
         t = time.perf_counter()
         if a.pipeline:
             st = nxt.result()
+            st["info"]["n"] = j
             if j + 1 < len(outs):
                 nxt = pool.submit(stage_b, j + 1)
             res, info = fp.render(st)
@@ -589,10 +663,13 @@ def main():
         if zoom:
             if fp.rect is not None:
                 zr = fp.rect.copy()
+                zr[1] += 0.07 * zr[2]                          # centre on nose/mouth, not forehead
                 zr[2] *= 0.6
                 Mz = rect_to_M(zr, 320)
-                zi = fp.rin.copy() if fp.rin is not None else zr
-                zi[2] *= 0.6 if fp.rin is not None else 1
+                zi = fp.rin.copy() if fp.rin is not None else zr.copy()
+                if fp.rin is not None:
+                    zi[1] += 0.07 * zi[2]
+                    zi[2] *= 0.6
                 zoom_last = np.hstack([cv2.warpAffine(I, rect_to_M(zi, 320), (320, 320)), cv2.warpAffine(O, Mz, (320, 320)),
                                        overlay(cv2.warpAffine(res, Mz, (320, 320)), info)])
             zoom.write(zoom_last)
@@ -613,6 +690,10 @@ def main():
            "active_frac": round(float(active.mean()), 3),
            "mean_weight": round(float(np.mean([i["weight"] for i in infos])), 3),
            "src": {k: sum(i["src"] == k for i in infos) for k in ("out", "in", "none")}}
+    ids = [(i["id_joyai"], i["id_refined"]) for i in infos if "id_refined" in i]
+    if ids:
+        res["identity_cos_joyai_refined"] = [round(float(np.mean([x[0] for x in ids])), 3),
+                                             round(float(np.mean([x[1] for x in ids])), 3)]
     res["wall_fps_incl_io"] = round(wall_fps, 1) if wall_fps else None
     res["fps_active"] = round(1000 / res["ms_median_active"]["total"], 1) if res["ms_median_active"]["total"] else None
     print("[facefix] RESULT", json.dumps(res), flush=True)

@@ -14,6 +14,7 @@ p.add_argument("--stats", required=True)
 p.add_argument("--video", required=True)
 p.add_argument("--out", required=True)
 p.add_argument("--rows", type=int, default=8)
+p.add_argument("--by-jaw", action="store_true", help="pick the frames with the widest open input mouth (spread out)")
 p.add_argument("--by-yaw", action="store_true", help="pick the frames nearest |yaw| = 0, 10, ... 70 deg instead")
 p.add_argument("--width", type=int, default=720, help="row width in the sheet")
 a = p.parse_args()
@@ -32,6 +33,14 @@ if dw.max() > 0.05:
 for name, i in events:
     if i is not None and len(pick) < a.rows:
         pick[i] = name
+if a.by_jaw:
+    jaw = np.nan_to_num(np.array([f.get("jaw_in") if f.get("jaw_in") is not None else np.nan for f in fi], float))
+    pick = {}
+    for i in np.argsort(-jaw):
+        if all(abs(i - k) > 15 for k in pick):
+            pick[int(i)] = f"jaw {jaw[i]:.2f}"
+        if len(pick) >= a.rows:
+            break
 if a.by_yaw:
     pick = {}
     for b in range(0, 80, 10):

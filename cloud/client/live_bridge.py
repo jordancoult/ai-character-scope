@@ -11,8 +11,9 @@ drops the oldest frames when the queue grows past `--max-buffer` (keeps latency 
   python live_bridge.py ... --output ffplay                    # watch in an ffplay window
 
 Optional face pass on the local GPU (off by default; run with cloud/facefix/.venv/bin/python, see
-cloud/facefix/README.md): --facefix abs (human refs) | rel (cartoon refs) re-renders the generated mouth with the
-real face's lip motion (LivePortrait). Each sent frame and its face analysis are cached by seq; each received frame
+cloud/facefix/README.md): --facefix swap (human refs: the real face swapped to the --ref identity and composited in;
+real mouth, best on open mouths) | abs | rel (LivePortrait re-renders the generated mouth with the real lip motion;
+rel for cartoon refs like G-Star). Each sent frame and its face analysis are cached by seq; each received frame
 is paired with its input via the server's source_seq and refined in worker threads (CPU analysis, GPU render);
 playout uses the refined frame if it is ready by its playout time, else the raw JoyAI frame.
 """
@@ -52,9 +53,10 @@ p.add_argument("--max-buffer", type=int, default=20, help="drop oldest frames ab
 p.add_argument("--seconds", type=float, default=0, help="stop after N seconds (0 = run until Ctrl+C)")
 p.add_argument("--crf", type=int, default=20, help="uplink H.264 quality")
 p.add_argument("--extra", default="{}", help="extra JSON for the start message")
-p.add_argument("--facefix", default="off", choices=["off", "abs", "rel"],
-               help="face pass on the local GPU: abs = the real lips replace the generated (human refs), rel = the "
-                    "real mouth motion is added to the generated mouth (cartoon refs)")
+p.add_argument("--facefix", default="off", choices=["off", "abs", "rel", "swap"],
+               help="face pass on the local GPU: abs = the real lips replace the generated (LivePortrait, human refs), "
+                    "rel = the real mouth motion is added to the generated mouth (LivePortrait, cartoon refs), swap = "
+                    "the real face swapped to the --ref identity and composited in (human refs)")
 p.add_argument("--facefix-size", type=int, default=128, choices=[128, 256], help="128: ~25 ms/frame on a 5080 "
                "Laptop; 256: sharper but ~58 ms (too slow for 25 fps)")
 p.add_argument("--facefix-restore", default="none", choices=["none", "sharpen", "gfpgan", "codeformer"])
@@ -184,15 +186,21 @@ class FaceFixer:
         import facefix  # lazy: needs cloud/facefix/.venv (torch, mediapipe, LivePortrait)
         fp = argparse.ArgumentParser()
         facefix.add_args(fp)
-        a = fp.parse_args(["--lip-mode", args.facefix, "--lp-size", str(args.facefix_size), "--restore",
+        method = ["--method", "swap", "--ref", args.ref] if args.facefix == "swap" else \
+            ["--lip-mode", args.facefix]
+        a = fp.parse_args([*method, "--lp-size", str(args.facefix_size), "--restore",
                            args.facefix_restore, "--compile", *shlex.split(args.facefix_extra)])
-        self.fp = facefix.FacePass(a)
+        self.fp = facefix.make_pass(a)
         self.pool_in, self.pool_an, self.pool_gpu = (ThreadPoolExecutor(1) for _ in range(3))
         self.inputs = collections.OrderedDict()          # seq -> (frame, future of analyze_input)
         self.stats = collections.Counter()
         self.ms = collections.deque(maxlen=250)
         t = time.time()
-        if self.fp.rt is not None:                       # warm up cudnn autotune + torch.compile in the GPU thread
+        if hasattr(self.fp, "swap"):                     # warm up the swapper (cudnn autotune) in the GPU thread
+            S = self.fp.size
+            self.pool_gpu.submit(lambda: [self.fp.swap(np.random.randint(0, 255, (S, S, 3), np.uint8))
+                                          for _ in range(5)]).result()
+        elif self.fp.rt is not None:                     # warm up cudnn autotune + torch.compile in the GPU thread
             rnd = lambda n: np.random.randint(0, 255, (n, n, 3), np.uint8)
             lp = self.fp.rt.lp
             self.pool_gpu.submit(lambda: [self.fp.rt(rnd(256), rnd(256), rnd(lp) if lp != 256 else None)
