@@ -10,6 +10,9 @@
   <span id="aiMemAge" title="time since last reset">–</span>
   <label title="auto-reset every N frames (0 = never)">auto <input id="aiMemAuto" type="number" min="0" step="100" value="0"></label>
   <button id="aiOrient" type="button" title="Flip output aspect: landscape / portrait (O)">⇄</button>
+  <button id="aiImgBtn" type="button" title="Use an image as the camera (static stream)">🖼</button>
+  <button id="aiCamBtn" type="button" title="Back to the real webcam" style="display:none">📷</button>
+  <input id="aiImgFile" type="file" accept="image/*" style="display:none">
 </div>
 <script>
 (() => {
@@ -49,6 +52,49 @@
     if ((e.key === "o" || e.key === "O") && !e.ctrlKey && !e.metaKey && !e.altKey && !/INPUT|TEXTAREA|SELECT/.test(tag) && !(e.target && e.target.isContentEditable)) {
       e.preventDefault(); flip();
     }
+  });
+  // Image input: getUserMedia returns a 30 fps canvas stream of the chosen image while one is set, so the normal
+  // "start camera" flow works unchanged (static stream). The page sees a camera with the current orientation.
+  const imgBtn = document.getElementById("aiImgBtn"), camBtn2 = document.getElementById("aiCamBtn");
+  const imgFile = document.getElementById("aiImgFile");
+  const md = navigator.mediaDevices, realGUM = md && md.getUserMedia ? md.getUserMedia.bind(md) : null;
+  let img = null, cvs = null, drawTimer = null;
+  const drawImg = () => {
+    if (!img || !cvs) return;
+    const portrait = currentOrientation() === "portrait";
+    const W = portrait ? 720 : 1280, H = portrait ? 1280 : 720;
+    if (cvs.width !== W || cvs.height !== H) { cvs.width = W; cvs.height = H; }
+    const c = cvs.getContext("2d"), s2 = Math.max(W / img.width, H / img.height);   // cover-fit, centered
+    const w = img.width * s2, h = img.height * s2;
+    c.fillStyle = "#000"; c.fillRect(0, 0, W, H);
+    c.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+  };
+  if (realGUM) {
+    md.getUserMedia = async (constraints) => {
+      if (img && constraints && constraints.video) {
+        cvs = cvs || document.createElement("canvas");
+        drawImg();
+        if (!drawTimer) drawTimer = setInterval(drawImg, 1000 / 30);
+        return cvs.captureStream(30);
+      }
+      return realGUM(constraints);
+    };
+  }
+  const restartCam = () => {   // stop the current stream so the next start picks the new source
+    try { if (typeof stopActiveRun === "function") stopActiveRun(); } catch (e) {}
+    try { const v = document.querySelector("video#camera") || camera; if (v && v.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; } } catch (e) {}
+    try { if (typeof stream !== "undefined" && stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } } catch (e) {}
+  };
+  imgBtn.addEventListener("click", () => imgFile.click());
+  imgFile.addEventListener("change", () => {
+    const f = imgFile.files && imgFile.files[0]; if (!f) return;
+    const im = new Image();
+    im.onload = () => { img = im; restartCam(); imgBtn.textContent = "🖼 " + f.name.slice(0, 14); camBtn2.style.display = ""; };
+    im.src = URL.createObjectURL(f);
+  });
+  camBtn2.addEventListener("click", () => {
+    img = null; if (drawTimer) { clearInterval(drawTimer); drawTimer = null; }
+    restartCam(); imgBtn.textContent = "🖼"; camBtn2.style.display = "none";
   });
   // count from the first start and from server-side auto resets too
   const camBtn = document.getElementById("startCameraBtn"); if (camBtn) camBtn.addEventListener("click", () => { t0 = Date.now(); });
