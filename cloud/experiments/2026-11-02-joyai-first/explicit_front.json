@@ -1,0 +1,30 @@
+{
+ "frames_out": 196,
+ "events": [
+  "accepted",
+  "session_granted",
+  "started"
+ ],
+ "fps_out": 9.57,
+ "gap_p95_ms": 1158.9,
+ "gap_max_ms": 2345.6,
+ "latency_median_ms": 1368.0,
+ "latency_p95_ms": 1611.0,
+ "args": {
+  "url": "ws://127.0.0.1:18080/ws",
+  "video": "assets/webcam_5941016.mp4",
+  "ref": "assets/char_front.png",
+  "prompt": "Replace the man with the pink cartoon starfish creature from the reference image: a tall cone-shaped pink head with no hair, sleepy half-closed eyes, a wide smile, bumpy pink skin, a black baseball cap with a red G-Star logo, and a thick gold chain on his bare pink chest. Keep his pose, gestures and hand movements.",
+  "fps": 24,
+  "width": 840,
+  "height": 480,
+  "seconds": 20.0,
+  "steps": 2,
+  "seed": 42,
+  "quality": 90,
+  "out": "cloud/experiments/2026-11-02-joyai-first/explicit_front.mp4",
+  "out_input": "cloud/experiments/2026-11-02-joyai-first/in_explicit_front.mp4",
+  "stats": "cloud/experiments/2026-11-02-joyai-first/explicit_front.json",
+  "extra": "{}"
+ }
+}

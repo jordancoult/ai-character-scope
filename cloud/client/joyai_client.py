@@ -131,10 +131,16 @@ async def main():
                         recv_t.append(now)
                         if pending and pending.get("t_capture_ms"):
                             lat_ms.append(now * 1000.0 - float(pending["t_capture_ms"]))
-                    if len(recv_frames) % 24 == 0:
-                        await ws.send(json.dumps({"type": "ack", "recv": len(recv_frames)}))
+                    # ack every frame (as the official web client does): the server's flow control
+                    # treats un-acked frames as network backlog and drops output chunks
+                    await ws.send(json.dumps({"type": "ack", "recv": len(recv_frames)}))
 
-        await asyncio.gather(sender(), receiver())
+        async def pinger():
+            while not stop.is_set():
+                await ws.send(json.dumps({"type": "ping", "t": time.time() * 1000.0, "recv": len(recv_frames)}))
+                await asyncio.sleep(1.0)
+
+        await asyncio.gather(sender(), receiver(), pinger())
         try:
             await ws.send(json.dumps({"type": "stop"}))
         except Exception:

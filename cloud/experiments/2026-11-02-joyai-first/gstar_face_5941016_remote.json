@@ -1,0 +1,31 @@
+{
+ "frames_out": 290,
+ "events": [
+  "accepted",
+  "session_granted",
+  "session_reset",
+  "started"
+ ],
+ "fps_out": 10.23,
+ "gap_p95_ms": 1150.0,
+ "gap_max_ms": 3452.0,
+ "latency_median_ms": 1351.0,
+ "latency_p95_ms": 1595.0,
+ "args": {
+  "url": "ws://127.0.0.1:18080/ws",
+  "video": "assets/webcam_5941016.mp4",
+  "ref": "assets/char_face.png",
+  "prompt": "Replace the main subject in the video with the character from the reference image.",
+  "fps": 24,
+  "width": 840,
+  "height": 480,
+  "seconds": 30.0,
+  "steps": 2,
+  "seed": 42,
+  "quality": 90,
+  "out": "cloud/experiments/2026-11-02-joyai-first/gstar_face_5941016.mp4",
+  "out_input": "cloud/experiments/2026-11-02-joyai-first/in_5941016.mp4",
+  "stats": "cloud/experiments/2026-11-02-joyai-first/gstar_face_5941016_remote.json",
+  "extra": "{}"
+ }
+}
