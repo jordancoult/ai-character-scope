@@ -38,11 +38,14 @@ import websockets
 
 p = argparse.ArgumentParser()
 p.add_argument("--url", default="ws://127.0.0.1:18080/ws")
-p.add_argument("--input", default="/dev/video0", help="v4l2 device or a video file (played in real time, looped)")
+p.add_argument("--input", default="/dev/video0", help="v4l2 device, a video file, or an http(s) URL to a video "
+               "(downloaded once to cloud/client/.cache; played in real time, looped)")
 p.add_argument("--input-size", default="1280x720", help="capture size for v4l2 devices")
 p.add_argument("--output", default="/dev/video10", help="v4l2loopback device, .mp4 file or 'ffplay' (a window)")
 p.add_argument("--out-size", default=None, help="output WxH after resize (default: generation size)")
-p.add_argument("--ref", default=None, help="reference image (character); omit for a prompt-only edit")
+p.add_argument("--ref", default=None, help="reference image (file or http(s) URL); omit for a prompt-only edit")
+p.add_argument("--keep-download", action="store_true", help="keep URL downloads in cloud/client/.cache for reuse "
+               "(default: delete them when the run ends)")
 p.add_argument("--prompt", required=True)
 p.add_argument("--portrait", action="store_true", help="480x840 (9:16) instead of 840x480")
 p.add_argument("--fps", type=float, default=26, help="camera send rate (JoyAI on an RTX 5090 outputs ~25-26 fps; "
@@ -70,6 +73,43 @@ p.add_argument("--save-input", default=None, help="write the frames as sent (gen
 args = p.parse_args()
 
 W, H = (480, 840) if args.portrait else (840, 480)
+
+
+FETCHED = []  # downloads made by this run (deleted at exit unless --keep-download)
+
+
+def fetch(spec):
+    """http(s) URL -> local file in cloud/client/.cache (keyed by URL; reused if kept); anything else unchanged."""
+    if not spec or not spec.startswith(("http://", "https://")):
+        return spec
+    import hashlib
+    import urllib.parse
+    import urllib.request
+    from pathlib import Path
+    cache = Path(__file__).resolve().parent / ".cache"
+    cache.mkdir(exist_ok=True)
+    ext = Path(urllib.parse.urlparse(spec).path).suffix or ".bin"
+    dst = cache / (hashlib.sha1(spec.encode()).hexdigest()[:16] + ext)
+    if not dst.exists() or dst.stat().st_size == 0:
+        print(f"[bridge] downloading {spec[:90]}...", flush=True)
+        req = urllib.request.Request(spec, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=60) as r, open(str(dst) + ".part", "wb") as f:
+            while chunk := r.read(1 << 20):
+                f.write(chunk)
+        Path(str(dst) + ".part").rename(dst)
+        print(f"[bridge] saved {dst.stat().st_size / 1e6:.1f} MB -> {dst}", flush=True)
+        FETCHED.append(dst)
+    return str(dst)
+
+
+def cleanup_downloads():
+    if args.keep_download:
+        return
+    for f in FETCHED:
+        try:
+            f.unlink()
+        except OSError:
+            pass
 
 
 def crop_resize(frame, w, h):
@@ -264,6 +304,7 @@ class FaceFixer:
 
 
 async def main():
+    args.input, args.ref = fetch(args.input), fetch(args.ref)
     ref = None
     if args.ref:
         with open(args.ref, "rb") as f:
@@ -463,3 +504,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+    finally:
+        cleanup_downloads()

@@ -30,3 +30,4 @@ cloud/facefix/.venv/
 cloud/facefix/third_party/
 cloud/facefix/weights/
 cloud/facefix/experiments/**/*.json
+cloud/client/.cache/
