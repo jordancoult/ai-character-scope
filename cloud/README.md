@@ -31,7 +31,7 @@ experiments/), keep it provider-independent, and add a row here.
    and port 8080 exposed. See `infra/providers.md`.
 2. Write `HOST PORT` into `cloud/infra/.pod`, then:
    ```bash
-   cloud/infra/pod.sh put cloud/pipelines/joyai/*.sh /workspace/
+   cloud/infra/pod.sh put cloud/pipelines/joyai/*.sh cloud/pipelines/joyai/webui /workspace/
    cloud/infra/pod.sh put .secrets/hf_token /root/.cache/huggingface/token   # private artifacts (optional)
    cloud/infra/pod.sh 'cd /workspace && bash setup.sh all'                   # artifacts + env + weights
    cloud/infra/pod.sh 'cd /workspace && setsid nohup bash -c "bash run_server.sh; echo EXIT=\$?" > logs/server.log 2>&1 < /dev/null & disown'
@@ -45,6 +45,8 @@ experiments/), keep it provider-independent, and add a row here.
      --ref assets/char_front.png --prompt "$(cat cloud/pipelines/joyai/prompts/gstar.txt)"
    ```
    Without a camera: `--input assets/webcam_5941016.mp4 --output test.mp4 --seconds 30`.
+   Or the browser demo at http://127.0.0.1:18080 (webcam in the browser; our memory panel bottom-right: **R** resets
+   the model's memory, auto-reset 0 = never).
 4. Terminate the machine when done.
 
 Local client env (once): `bin/uv venv cloud/.venv --python 3.12 && bin/uv pip install --python cloud/.venv/bin/python websockets opencv-python-headless numpy av`.

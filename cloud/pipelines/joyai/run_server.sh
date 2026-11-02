@@ -35,4 +35,7 @@ export JOYOMNI_RECORD_DIR=${JOYOMNI_RECORD_DIR:-$W/recordings}
 export HF_HOME=$W/hf_cache
 # face++ checkpoint (2026-11-01): better human identity + motion following than 0811 in our tests
 export JOYOMNI_DIT_CKPT=${JOYOMNI_DIT_CKPT:-$JOYOMNI_CKPT_ROOT/JoyAI-Video-Edit/dit/joyai_video_edit_dit_1101_face++.pth}
+# our web-UI additions (memory panel: R-key reset, auto-reset setting); upstream file kept as index.html.orig
+HERE="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$HERE/webui/patch_webui.sh" ] && JOYAI_DATA=$W bash "$HERE/webui/patch_webui.sh" || true
 exec bash $J/deploy/run_server.sh "$@"

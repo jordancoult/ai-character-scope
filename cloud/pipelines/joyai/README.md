@@ -21,6 +21,7 @@ own clients.
 | `save_cache.sh` | After the first warm start on a new GPU model: packs the compile cache into one tar |
 | `publish_artifacts.sh` | Uploads wheels + cache tars to `JordanCo/ai-livestream-artifacts` (needs a write token) |
 | `prompts/` | Working prompts (G-Star, human) |
+| `webui/` | Our additions to the upstream browser demo, injected at start (`patch_webui.sh`): a **memory panel** with a **Reset (R)** key/button (fresh temporal memory without restarting the camera), a since-reset timer and the auto-reset interval (default 0 = never, for drift tests; upstream hides it at 600 frames ≈ 25 s) |
 | `experiments/` | Dated runs with FINDINGS.md (videos are gitignored) |
 
 ## Recipe (what works)

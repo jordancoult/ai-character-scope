@@ -1,0 +1,41 @@
+<!-- ai-livestream patch: memory panel (injected before </body> by patch_webui.sh; upstream file otherwise unchanged) -->
+<style>
+  #aiMemPanel { position: fixed; right: 14px; bottom: 14px; z-index: 9999; background: rgba(20,20,24,.88); color: #eee;
+    font: 13px/1.35 system-ui, sans-serif; padding: 10px 12px; border-radius: 10px; box-shadow: 0 4px 18px rgba(0,0,0,.35); min-width: 230px; }
+  #aiMemPanel b { font-size: 13px; } #aiMemPanel .r { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+  #aiMemPanel button { background: #e8a13a; color: #111; border: 0; border-radius: 6px; padding: 5px 10px; font-weight: 600; cursor: pointer; }
+  #aiMemPanel input { width: 70px; background: #2a2a30; color: #eee; border: 1px solid #444; border-radius: 5px; padding: 3px 5px; }
+  #aiMemPanel small { color: #aaa; }
+</style>
+<div id="aiMemPanel">
+  <b>Model memory</b> <small>(temporal KV cache)</small>
+  <div class="r"><button id="aiMemReset" type="button" title="Reset memory now (key: R)">Reset (R)</button>
+    <span>since reset: <b id="aiMemAge">–</b></span></div>
+  <div class="r"><label>auto-reset every <input id="aiMemAuto" type="number" min="0" step="100" value="0"> frames</label></div>
+  <small>0 = never (long-run drift test). Applies on the next reset/start. Upstream default: 600 (~25 s).</small>
+</div>
+<script>
+(() => {
+  const auto = document.getElementById("aiMemAuto"), age = document.getElementById("aiMemAge");
+  const hidden = document.getElementById("kvResetFrames");
+  let t0 = null;
+  const sync = () => { if (hidden) hidden.value = String(Math.max(0, Math.floor(Number(auto.value) || 0))); };
+  auto.addEventListener("change", sync); sync();
+  const reset = () => { sync(); t0 = Date.now(); try { send(); } catch (e) { console.warn("reset failed", e); } };
+  document.getElementById("aiMemReset").addEventListener("click", reset);
+  document.addEventListener("keydown", (e) => {
+    const tag = (e.target && e.target.tagName) || "";
+    if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey && !e.altKey && !/INPUT|TEXTAREA|SELECT/.test(tag) && !(e.target && e.target.isContentEditable)) {
+      e.preventDefault(); reset();
+    }
+  });
+  // count from the first start and from server-side auto resets too
+  const camBtn = document.getElementById("startCameraBtn"); if (camBtn) camBtn.addEventListener("click", () => { t0 = Date.now(); });
+  const sb = document.getElementById("sendBtn"); if (sb) sb.addEventListener("click", () => { t0 = Date.now(); });
+  setInterval(() => {
+    if (!t0) return;
+    const s = Math.floor((Date.now() - t0) / 1000);
+    age.textContent = (s >= 60 ? Math.floor(s / 60) + "m " : "") + (s % 60) + "s";
+  }, 1000);
+})();
+</script>
