@@ -25,3 +25,4 @@ cloud/infra/.pod
 cloud/third_party/
 cloud/.venv/
 cloud/**/*.mp4
+cloud/client/models/

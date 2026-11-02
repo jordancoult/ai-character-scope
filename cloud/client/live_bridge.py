@@ -105,7 +105,9 @@ async def main():
         ref = "data:image/png;base64," + base64.b64encode(f.read()).decode()
     start = {"type": "start", "prompt": args.prompt, "ref_image": ref, "width": W, "height": H, "fps": args.fps,
              "num_inference_steps": 2, "input_codec": "h264", "output_codec": "h264", "detection_mode": "off",
-             "use_pe": False, "kv_reset_frames": 0, **json.loads(args.extra)}
+             "use_pe": False, "kv_reset_frames": 0,
+             # freeze-on-static skips "static" frames; it also drops subtle mouth motion (lip-sync test 2026-11-02)
+             "freeze_kv_on_static": False, **json.loads(args.extra)}
     src = Source(args.input)
     queue = collections.deque()          # (frame, t_capture_ms)
     stats = collections.Counter()

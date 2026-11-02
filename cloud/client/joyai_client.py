@@ -63,6 +63,7 @@ async def main():
     start.update(json.loads(args.extra))
 
     recv_frames, lat_ms, recv_t, events = [], [], [], []
+    src_seq = []  # input frame number (1-based, as sent) each output frame was made from
     sent_frames = []
     t_started = None
     async with websockets.connect(args.url, max_size=64 * 2**20, ping_interval=20) as ws:
@@ -160,6 +161,7 @@ async def main():
                     if img is not None:
                         recv_frames.append(img)
                         recv_t.append(now)
+                        src_seq.append((pending or {}).get("source_seq"))
                         if pending and pending.get("t_capture_ms"):
                             lat_ms.append(now * 1000.0 - float(pending["t_capture_ms"]))
                     # ack every frame (as the official web client does): the server's flow control
@@ -192,7 +194,7 @@ async def main():
     print("[client] RESULT", json.dumps(res))
     if args.stats:
         with open(args.stats, "w") as f:
-            json.dump({**res, "args": vars(args)}, f, indent=1)
+            json.dump({**res, "args": vars(args), "source_seq": src_seq}, f, indent=1)
     if recv_frames:
         h, w = recv_frames[0].shape[:2]
         vw = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc(*"mp4v"), args.fps, (w, h))
