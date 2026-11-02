@@ -22,3 +22,26 @@ Key learnings
 - Output arrives in 8-frame bursts (one chunk), so the player must pace it (gap p95 about 1.1 s at 10 fps).
 - First server start on a new GPU type takes about 60 min (torch.compile + autotune for 49 shapes, written to the
   network volume). Cached for the next start on the same GPU type.
+
+## Long runs (45 s, G-Star full-body ref, explicit prompt)
+- `long_reset600` (server default: memory reset every 600 input frames = 25 s): 10.6 fps; no visible jump or
+  blackout at the reset (`reset_window.jpg`).
+- `long_noreset` (`kv_reset_frames: 0`): 11.2 fps; identity holds for all 45 s, no drift (`noreset_strip.jpg`).
+- Head comes out rounder/shorter than the reference's tall cone.
+
+## Per-chunk profile on the PRO 4500 (8 frames per chunk, `profile_timings`)
+| Stage | Time |
+|---|---|
+| DiT (2 steps) | 0.51–0.56 s, caps this card at ~15 fps |
+| VAE encode | 0.04–0.13 s |
+| VAE decode | 0.08–0.20 s |
+| JPEG encode (MJPEG downlink used by the test client) | 0.011 s / 0.356 s alternating, to investigate (H.264 path differs) |
+| Server residence per chunk | 0.9–1.14 s |
+The stages are pipelined, so throughput ≈ the slowest stage plus contention. An RTX 5090 has about 2× this card's
+compute → DiT ~0.27 s per chunk → about 30 fps for the DiT alone [est].
+
+## Checkpoint `1101_face++` (released 2026-11-01, undocumented) vs `0811`
+- G-Star (`facepp_front`): about the same quality; the cap logo renders as a clean "G-Star". 11.6 fps.
+- Human (`facepp_human`): **clearly better**. Identity is very close to the ref, and head tilts, expressions and
+  hand-to-face gestures are followed (0811 gave a near-static person). 9.5 fps.
+- **Adopted as the default** (`run_server.sh`, `setup_pod.sh`). Startup with the existing compile cache: ~4 min.

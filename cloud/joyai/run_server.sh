@@ -14,4 +14,6 @@ export JOYOMNI_FP8_FAST_ACCUM=${JOYOMNI_FP8_FAST_ACCUM:-1}
 export JOYOMNI_LOW_VRAM=${JOYOMNI_LOW_VRAM:-1}
 export JOYOMNI_RECORD_DIR=${JOYOMNI_RECORD_DIR:-$W/recordings}
 export HF_HOME=$W/hf_cache
+# face++ checkpoint (2026-11-01): better human identity + motion following than 0811 in our tests
+export JOYOMNI_DIT_CKPT=${JOYOMNI_DIT_CKPT:-$J/deploy/deps/checkpoints/JoyAI-Video-Edit/dit/joyai_video_edit_dit_1101_face++.pth}
 exec bash $J/deploy/run_server.sh "$@"

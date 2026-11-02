@@ -18,7 +18,7 @@ weights() {
   [ -x /root/venv/bin/python ] || uv venv -q /root/venv --python 3.12
   uv pip install -q --python /root/venv/bin/python "huggingface_hub[hf_transfer]"
   export HF_HUB_ENABLE_HF_TRANSFER=1
-  DIT=${JOYAI_DIT:-joyai_video_edit_dit_0811.pth}
+  DIT=${JOYAI_DIT:-joyai_video_edit_dit_1101_face++.pth}
   /root/venv/bin/hf download jdopensource/JoyAI-Video-Edit "dit/$DIT" vae/config.json \
     vae/diffusion_pytorch_model.safetensors --repo-type model --local-dir $CK/JoyAI-Video-Edit
   /root/venv/bin/hf download XiaomiMiMo/MiMo-VL-7B-RL-2508 --repo-type model --local-dir $CK/MiMo-VL-7B-RL-2508
@@ -44,7 +44,7 @@ envsetup() {
   nvcc --version | grep release
   [ -x /root/venv/bin/python ] || uv venv -q /root/venv --python 3.12
   source /root/venv/bin/activate
-  uv pip install -q -r $J/deploy/requirements.txt setuptools wheel "huggingface_hub[hf_transfer]"
+  uv pip install -q -r $J/deploy/requirements.txt pip setuptools wheel "huggingface_hub[hf_transfer]"
   export TORCH_CUDA_ARCH_LIST=12.0
   # kernel wheels: build once, cache on the volume
   if ! ls $W/wheels/sageattention-*.whl >/dev/null 2>&1; then
@@ -60,7 +60,7 @@ envsetup() {
     git -C $W/build/cutlass checkout -q dcf215af
     mkdir -p /root/build && cp -r $J/deploy/joyomni_ops /root/build/
     ( cd /root/build && JOYOMNI_OPS_CUDA_ARCHS=120a JOYOMNI_OPS_CUTLASS_DIR=$W/build/cutlass MAX_JOBS=$(nproc) \
-      pip wheel --no-build-isolation --no-deps -w $W/wheels ./joyomni_ops >$W/logs/ops_build.log 2>&1 )
+      python -m pip wheel --no-build-isolation --no-deps -w $W/wheels ./joyomni_ops >$W/logs/ops_build.log 2>&1 )
   fi
   uv pip install -q --no-deps $W/wheels/sageattention-*.whl $W/wheels/joyomni_ops-*.whl
   python -c "import torch, sageattention, joyomni_ops; print('torch', torch.__version__, '| sage ok | joyomni_ops fp8', joyomni_ops.has_fp8())"
