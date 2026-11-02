@@ -37,3 +37,9 @@ Server output arrives in 8-frame bursts, so playout runs from a jitter buffer wi
 Glass-to-glass = capture on the laptop → frame shown by the player (network both ways + model + playout buffer).
 - **2-minute run** through the bridge (portrait, memory reset disabled): 3,104 frames played, 0 dropped / 0 repeated,
   glass-to-glass 1.03 / 1.07 s; identity identical from start to end (`bridge_2min_strip.jpg`, one frame per 15 s).
+
+## Prompt / reference variants (portrait, desk clip, 20 s)
+- `arms` (adds "short stubby pink starfish arms with rounded pink hands"): about the same as without; hands stay
+  human-shaped but pink, which keeps gestures readable. 26.9 fps.
+- `portrait_faceref` (upper-body `char_face.png` as the ref): worse; a muscular, realistic human torso. 26.7 fps.
+- **Recipe: full-body reference on a plain background + an explicit description of the character.**
