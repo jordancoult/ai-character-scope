@@ -214,6 +214,43 @@ render+compose 39 ms under load (it was 40.7 ms and 58 % in time before the spli
 Review: `review_dbg_*.mp4` (face close-ups with the mask outline: orange = edge, green = 50 %), `review_clean_*.mp4`
 (JoyAI | refined), `review_live.mp4`, `sheet_dbg_*.jpg`.
 
+## Binding the mask to G-Star's mouth: tracker comparison (`experiments/2026-11-02-track/`)
+User: "still janky… loses track easily". The mask was placed from MediaPipe landmarks on the generated face (via the
+input-anchored filter), which drift and drop out on a cartoon. Tested trackers that follow G-Star's own pixels
+(`--track flow|sam2|anchor`, `track.py`), offline on five G-Star recordings, then live:
+- **flow (new default):** dense optical flow (OpenCV DIS, 160 px ROI around the mouth, CPU ~2–3 ms) propagates the
+  mask geometry frame to frame with a RANSAC similarity fit (lip motion inside is rejected as outliers); MediaPipe
+  only re-anchors it slowly when it agrees (drift) and is ignored when it disagrees unless that persists while the
+  flow is unreliable; the mouth line is kept within 12° of the real face's eye line.
+- **sam2:** SAM 2.1 tiny, streaming (camera-predictor fork `third_party/sam2rt`, 512 px, GPU preprocessing),
+  box-prompted once from MediaPipe's lips, segments the actual grin (true shape), paste mask = segment grown around
+  the lips and down for the jaw, feathered; keeps the connected component that overlaps the previous mouth, nothing
+  above the eye–mouth midline; re-prompts on loss/drift. 9.4 ms alone, 15–19 ms next to the LivePortrait render.
+- **anchor:** the previous version (MediaPipe geometry relative to the input face, jump rejection).
+- LivePortrait's own implicit lip keypoints were checked on G-Star crops: they cluster at the mouth centre (no corner
+  /extent information), so they can't size a mask. CoTracker3 online not tried: its sliding window adds ≥ 8 frames
+  of latency, more than the whole render budget.
+
+Mask-centre step per frame (% of face size): std / max / jumps > 8 %; track losses; mean effect weight:
+
+| Clip | flow | sam2 | anchor |
+|---|---|---|---|
+| talking G-Star (lip sync) | **0.46 / 4.5 / 0**, 3 flow failures, w 0.98, **lip 0.65** | 0.92 / 5.1 / 0, 3 lost, lip 0.60 | 0.79 / 4.8 / 0, lip 0.66 |
+| static open mouth | **0.08 / 1.7 / 0** | 0.31 / 4.9 / 0, 5 lost | 0.30 / 8.7 / 1 |
+| desk portrait (hands near the face) | **0.57** / 13.1 / 1 | 0.85 / 15.2 / 1 | 0.70 / 7.9 / 0 |
+| desk landscape (gestures, head motion) | **0.56 / 6.2 / 0**, 0 re-inits | 6.0 / 93 / 45 (locks onto hands; eye-region diff up to 47) | 1.95 / 24.7 / 14, 54 rejected |
+| boxer (side-on) | effect off (w 0.00) | off | off |
+
+Size changes per frame: flow ≤ 4 %, anchor ≤ 40 %, sam2 ≤ 47 %. Eyes/brows pixel-identical with flow on every clip.
+SAM 2 fits the grin's true shape beautifully on the easy clips (`sheet_sam2_eval_desk_portrait.jpg`) but loses it
+to hands and fragments on the hard one, and costs 15–19 ms; flow is the most stable everywhere at ~0 GPU cost, so
+it is the default (`--track sam2` stays available).
+Live (real server, G-Star portrait, `gstar.txt`, talking clip, 45 s, flow): refined in time **99.5 %** (4 held,
+5 raw), 972 played / 1 repeated / 0 dropped, glass-to-glass 932 / 1403 ms, lip sync 0.53 (this G-Star renders a
+smaller grin than the recording the offline numbers come from).
+Review: `review_dbg_{flow,sam2}_*.mp4` (mask outline), `review_clean_flow_*.mp4` (JoyAI | refined),
+`review_live_flow.mp4`, `sheet_*.jpg`.
+
 ## Licenses (for the record; the project is academic, so non-commercial models are allowed)
 | Component | License | OK? |
 |---|---|---|

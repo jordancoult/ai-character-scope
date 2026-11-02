@@ -43,4 +43,12 @@ if [ "${RESTORE:-0}" = 1 ]; then
   dl https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/RestoreFormer.pth weights/restore/RestoreFormer.pth
   dl https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth weights/restore/codeformer.pth
 fi
+# optional: --track sam2 (SAM 2.1 tiny, streaming fork); flow (default) needs nothing extra
+if [ "${SAM2:-0}" = 1 ]; then
+  .venv/bin/python -m pip --version >/dev/null 2>&1 || true
+  ../../bin/uv pip install --python .venv/bin/python hydra-core iopath
+  SAM2_BUILD_CUDA=0 ../../bin/uv pip install --python .venv/bin/python --no-build-isolation --no-deps sam2
+  [ -d third_party/sam2rt ] || git clone --depth 1 https://github.com/Gy920/segment-anything-2-real-time.git third_party/sam2rt
+  .venv/bin/python -c "from huggingface_hub import hf_hub_download as d; d('facebook/sam2.1-hiera-tiny', 'sam2.1_hiera_tiny.pt', local_dir='weights/sam2')"
+fi
 echo "facefix setup done"

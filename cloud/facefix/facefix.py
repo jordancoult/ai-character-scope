@@ -24,6 +24,8 @@ import numpy as np
 import torch
 from mediapipe.tasks.python import BaseOptions, vision
 
+from track import paste_mask_from_seg
+
 HERE = Path(__file__).resolve().parent
 LP_DIR = HERE / "third_party" / "LivePortrait"
 WEIGHTS = HERE / "weights"
@@ -553,6 +555,13 @@ class FacePass:
         self.trk_mask = RelTrack(a.track_alpha, a.track_jump, a.track_persist)
         self.mask_geom = None
         self.last_mask = None
+        self.paste_mask = None
+        if a.track == "flow":
+            from track import FlowTracker
+            self.flow = FlowTracker()
+        elif a.track == "sam2" and a.method == "lp":
+            from track import SamTracker
+            self.sam = SamTracker()
 
     def smooth_rect(self, rect):
         if rect is None or self.rect is None:
@@ -613,7 +622,36 @@ class FacePass:
             meas_geom = mouth_geom(fo.pts, a.chin_width, a.chin_top) if ok_out else None
             vr, okr = self.trk_rect.update(None if mr is None else to_rel(mr, fr, lens=RECT_LENS))
             vg, okg = self.trk_mask.update(None if meas_geom is None else to_rel(meas_geom, fr, lens=GEOM_LENS))
-            if vr is not None and vg is not None:
+            if a.track == "sam2":                              # bind to G-Star's actual mouth: SAM 2 segment
+                ts = time.perf_counter()
+                seg, oks = self.sam.update(O, fo.pts if ok_out else None)
+                info["ms_sam"] = round(1000 * (time.perf_counter() - ts), 1)
+                pm = paste_mask_from_seg(seg, a.feather) if seg is not None else None
+                if vr is not None and pm is not None:
+                    rect = from_rel(vr, fr, lens=RECT_LENS)
+                    self.paste_mask = pm
+                    ys, xs = np.nonzero(seg)
+                    self.mask_geom = np.array([xs.mean(), ys.mean(), np.ptp(xs) / 2, 0, 0, 0])   # for stats
+                    gates["track"] = 1.0 if oks or self.sam.bad <= a.track_hold else 0.0
+                    gates.pop("mapped", None)
+                else:
+                    gates["track"] = 0.0
+            elif a.track == "flow":                            # bind to G-Star's pixels: optical-flow tracker
+                fg, okf = self.flow.update(O, meas_geom)
+                if fg is not None:                             # flow can accumulate rotation (head turns, hands):
+                    da = (fg[5] - fr[2] + np.pi) % (2 * np.pi) - np.pi      # keep the mouth line within 12 deg
+                    lim = np.radians(12)                       # of the real face's eye line
+                    if abs(da) > lim:
+                        fg[5] = fr[2] + np.clip(da, -lim, lim)
+                        self.flow.g[5] = fg[5]
+                if vr is not None and fg is not None:
+                    rect = from_rel(vr, fr, lens=RECT_LENS)
+                    self.mask_geom = fg.copy()
+                    gates["track"] = 1.0 if okf or self.flow.bad <= a.track_hold else 0.0
+                    gates.pop("mapped", None)
+                else:
+                    gates["track"] = 0.0
+            elif vr is not None and vg is not None:
                 rect = from_rel(vr, fr, lens=RECT_LENS)
                 self.mask_geom = from_rel(vg, fr, lens=GEOM_LENS)
                 # rejected (jumped / wrong place): hold the geometry and fade out; output face merely not found
@@ -648,7 +686,8 @@ class FacePass:
         return {"O": O, "I": I, "fi_pts": fi.pts if fi is not None else None,
                 "fo_pts": fo.pts if fo is not None else None, "info": info, "weight": self.weight, "rect": None if self.rect is None else self.rect.copy(),
                 "cin": self.last_in, "pts": rpts,
-                "mask_geom": None if self.mask_geom is None else self.mask_geom.copy()}
+                "mask_geom": None if self.mask_geom is None else self.mask_geom.copy(),
+                "paste_mask": self.paste_mask if a.track == "sam2" else None}
 
     def render(self, st):
         """GPU render + CPU compose (the live bridge runs the two in separate threads)."""
@@ -681,7 +720,10 @@ class FacePass:
             g, gen, Mo = self.rt.gen, st["gen"], st["Mo"]
             Minv = cv2.invertAffineTransform(Mo)
             fpts = st["fo_pts"] if st["fo_pts"] is not None else st["fi_pts"]
-            if a.mask == "chin" and (st.get("mask_geom") is not None or fpts is not None):
+            if a.mask == "chin" and st.get("paste_mask") is not None:   # SAM 2 segment-based mask
+                x0, y0, x1, y1, m = st["paste_mask"]
+                self.last_mask = (x0, y0, m)
+            elif a.mask == "chin" and (st.get("mask_geom") is not None or fpts is not None):
                 # tight mask below the nose in frame pixels: everything else stays JoyAI's, pixel-identical
                 geom = st["mask_geom"] if st.get("mask_geom") is not None else \
                     mouth_geom(fpts, a.chin_width, a.chin_top)
@@ -832,6 +874,9 @@ def add_args(p):
                    "(wide mouths, G-Star) or ellipse")
     p.add_argument("--no-stabilize", dest="stabilize", action="store_false", help="per-frame crop/mask from the "
                    "output landmarks (old behaviour) instead of input-anchored, jump-rejecting tracks")
+    p.add_argument("--track", default="flow", choices=["flow", "sam2", "anchor"],
+                   help="mouth-mask tracker: flow = optical flow on the generated face + slow MediaPipe re-anchoring; "
+                        "anchor = MediaPipe geometry relative to the input face (previous version)")
     p.add_argument("--track-alpha", type=float, default=0.15, help="EMA rate of accepted crop/mask measurements")
     p.add_argument("--track-jump", type=float, default=0.08, help="reject measurements that move more than this "
                    "many face sizes (tracking errors)")
@@ -970,6 +1015,11 @@ def main():
            "src": {k: sum(i["src"] == k for i in infos) for k in ("out", "in", "none")}}
     if hasattr(fp, "trk_mask") and a.stabilize:
         res["track_mask"], res["track_rect"] = fp.trk_mask.stats, fp.trk_rect.stats
+        if hasattr(fp, "flow"):
+            res["track_mask"] = fp.flow.stats
+        if hasattr(fp, "sam"):
+            res["track_mask"] = fp.sam.stats
+            res["ms_sam_median"] = med([i["ms_sam"] for i in infos[skip:] if "ms_sam" in i])
     ed = [i["eye_diff"] for i in infos if "eye_diff" in i]
     if ed:
         res["eye_region_max_abs_diff"] = int(max(ed))
