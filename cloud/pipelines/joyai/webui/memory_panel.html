@@ -9,6 +9,7 @@
   <button id="aiMemReset" type="button" title="Reset model memory (R)">Reset (R)</button>
   <span id="aiMemAge" title="time since last reset">–</span>
   <label title="auto-reset every N frames (0 = never)">auto <input id="aiMemAuto" type="number" min="0" step="100" value="0"></label>
+  <button id="aiOrient" type="button" title="Flip output aspect: landscape / portrait (O)">⇄</button>
 </div>
 <script>
 (() => {
@@ -23,6 +24,30 @@
     const tag = (e.target && e.target.tagName) || "";
     if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey && !e.altKey && !/INPUT|TEXTAREA|SELECT/.test(tag) && !(e.target && e.target.isContentEditable)) {
       e.preventDefault(); reset();
+    }
+  });
+  // Output orientation: upstream forces it to the camera's orientation; this lock (saved in localStorage) wins.
+  const ob = document.getElementById("aiOrient");
+  const origApply = window.applyOrientation;
+  let lock = localStorage.getItem("aiOrientLock") || null;
+  const label = () => { ob.textContent = "⇄ " + (currentOrientation() === "portrait" ? "Portrait" : "Landscape"); };
+  if (typeof origApply === "function") {
+    window.applyOrientation = (o) => { origApply(lock || o); label(); };
+    if (lock) origApply(lock);
+  }
+  label();
+  const flip = () => {
+    lock = currentOrientation() === "portrait" ? "landscape" : "portrait";
+    localStorage.setItem("aiOrientLock", lock);
+    if (typeof origApply === "function") origApply(lock);
+    label();
+    try { if (typeof ws !== "undefined" && ws && ws.readyState === WebSocket.OPEN && sessionGranted) { t0 = Date.now(); send(); } } catch (e) { console.warn(e); }
+  };
+  ob.addEventListener("click", flip);
+  document.addEventListener("keydown", (e) => {
+    const tag = (e.target && e.target.tagName) || "";
+    if ((e.key === "o" || e.key === "O") && !e.ctrlKey && !e.metaKey && !e.altKey && !/INPUT|TEXTAREA|SELECT/.test(tag) && !(e.target && e.target.isContentEditable)) {
+      e.preventDefault(); flip();
     }
   });
   // count from the first start and from server-side auto resets too
