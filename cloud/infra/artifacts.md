@@ -1,6 +1,6 @@
 # Private build artifacts (Hugging Face)
 
-Repo: **`JordanCo/live-character-artifacts`** (private, model type). Holds what we build ourselves and isn't on any
+Repo: **`JordanCo/ai-livestream-artifacts`** (private, model type). Holds what we build ourselves and isn't on any
 public hub, so a fresh machine on any provider can skip the kernel build (~10 min) and the first compile (~12 min).
 
 ```

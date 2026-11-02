@@ -18,7 +18,7 @@ RTX 5080 Laptop GPU (Blackwell, `sm_120`, 16 GB). ~29 FPS live (input-limited), 
 
 Repos: this one (`jordancoult/ai-character-scope`, everything) + `jordancoult/scope` (Scope fork with the local
 model patches, checked out at `scope/`). Large files live outside git: local weights in `models/`, cloud build
-artifacts in the private HF repo `JordanCo/live-character-artifacts`.
+artifacts in the private HF repo `JordanCo/ai-livestream-artifacts`.
 
 **Results, benchmarks, presets, every patch and what was tried/rejected: [README_QUICKSTART.md](README_QUICKSTART.md).**
 

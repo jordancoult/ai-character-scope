@@ -17,7 +17,7 @@ patches) · `cloud/docs/lessons.md` (hard-won rules).
 ## Cloud design rules
 - **Provider-independent.** A pipeline needs only a Linux machine with a supported GPU, SSH and one TCP port.
   Public weights come from Hugging Face; our build artifacts (kernel wheels, compile caches) come from the private
-  HF repo `JordanCo/live-character-artifacts`. Provider notes (how to rent) live in `cloud/infra/providers.md`.
+  HF repo `JordanCo/ai-livestream-artifacts`. Provider notes (how to rent) live in `cloud/infra/providers.md`.
 - **GPU requirement (current pipelines): consumer/workstation Blackwell, sm_120, ≥ 32 GB**, i.e. RTX 5090 (target,
   best $/fps) or RTX PRO 6000. `setup.sh` checks this and refuses anything else.
 - **One folder per pipeline** under `cloud/pipelines/<name>/`: `setup.sh`, `run_server.sh`, `README.md` (recipe,

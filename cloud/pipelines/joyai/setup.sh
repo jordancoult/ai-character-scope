@@ -6,7 +6,7 @@
 #   JOYAI_DATA       where code, weights and caches live (default /workspace: a persistent volume if the provider
 #                    gives one, otherwise just local disk)
 #   ARTIFACTS_REPO   private Hugging Face repo with our prebuilt kernel wheels + warm compile caches
-#                    (default JordanCo/live-character-artifacts); needs an HF token in ~/.cache/huggingface/token
+#                    (default JordanCo/ai-livestream-artifacts); needs an HF token in ~/.cache/huggingface/token
 #   JOYAI_DIT        DiT checkpoint file (default joyai_video_edit_dit_1101_face++.pth)
 #
 # Usage: bash setup.sh env|weights|artifacts|all      (idempotent; `all` = artifacts, env, weights)
@@ -28,7 +28,7 @@ fi
 
 W=${JOYAI_DATA:-/workspace}
 STEP=${1:-all}
-ARTIFACTS_REPO=${ARTIFACTS_REPO:-JordanCo/live-character-artifacts}
+ARTIFACTS_REPO=${ARTIFACTS_REPO:-JordanCo/ai-livestream-artifacts}
 export HF_HOME=${HF_HOME:-$W/hf_cache} UV_CACHE_DIR=/root/uv_cache UV_LINK_MODE=copy HF_HUB_ENABLE_HF_TRANSFER=1
 # keep the user's HF login visible even though HF_HOME moved
 [ -f /root/.cache/huggingface/token ] && [ ! -f "$HF_HOME/token" ] && mkdir -p "$HF_HOME" && cp /root/.cache/huggingface/token "$HF_HOME/token"

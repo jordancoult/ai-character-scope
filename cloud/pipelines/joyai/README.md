@@ -19,7 +19,7 @@ own clients.
 | `setup.sh` | `artifacts` (private HF wheels + compile cache) · `env` (CUDA compiler, venv, kernels) · `weights` (public HF) · `all` |
 | `run_server.sh` | Starts the server: per-GPU settings, face++ checkpoint, compile cache restored from `$JOYAI_DATA/cache/<GPU>.tar` |
 | `save_cache.sh` | After the first warm start on a new GPU model: packs the compile cache into one tar |
-| `publish_artifacts.sh` | Uploads wheels + cache tars to `JordanCo/live-character-artifacts` (needs a write token) |
+| `publish_artifacts.sh` | Uploads wheels + cache tars to `JordanCo/ai-livestream-artifacts` (needs a write token) |
 | `prompts/` | Working prompts (G-Star, human) |
 | `experiments/` | Dated runs with FINDINGS.md (videos are gitignored) |
 
