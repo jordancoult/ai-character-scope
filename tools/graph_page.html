@@ -142,7 +142,8 @@ const NODES = {
             <label><input type="checkbox" data-act="noise-ctl" ${S.noise_controller?'checked':''}> motion-adaptive level${TAG_I}</label>
             ${slider('feedback', 'Feedback: start from the last output (0 = off)', S.feedback || 0, 0, 1, 0.05)}<span class="muted">Each chunk refines the previous result instead of restarting from the camera. Feedback 1 = no camera at all. Noise = how much is reinvented each chunk (variety vs. polish)</span>
             ${(S.feedback_mode||'last')==='extrapolate' ? slider('feedback_motion', 'Motion carried forward (1 = all)', S.feedback_motion ?? 1, 0, 1.5, 0.05) : ''}<label class="lrow">Feedback source <select data-act="feedback-mode">${[['last','newest frame (steady)'],['extrapolate','continue motion'],['chunk','whole chunk']].map(([v,l])=>`<option value="${v}" ${(S.feedback_mode||'last')===v?'selected':''}>${l}</option>`).join('')}</select></label>`},
-  vace:    {t:'VACE', k:'cond', x:580, y:30, ins:['control','reference'], outs:['hints'], body:()=>`<span class="muted">Turns depth/camera and the reference into hints added inside the model</span>`},
+  vace:    {t:'VACE', k:'cond', x:580, y:30, ins:['control','reference'], outs:['hints'], body:()=>`<span class="muted">Turns depth/camera and the reference into hints added inside the model</span>
+            <label title="With 2+ steps, compute the depth/VACE hints on the first step only and reuse them (the VACE blocks are ~40% of a pass). Approximation: judge the pose by eye"><input type="checkbox" data-act="vace-reuse" ${S.vace_hint_reuse?'checked':''}> reuse hints across steps (faster)${TAG_I}</label>`},
   sink:    {t:'Memory: sink', k:'mem', x:580, y:215, ins:['first frames'], outs:['kv'], body:()=>`<span class="muted">First frames after a reset; never evicted</span>
             <label class="lrow">Sink size${TAG_R} <select data-act="sink" style="width:110px"><option value="">default (3)</option>${Array.from({length:S.sink_max+1},(_, i)=>`<option ${S.sink_frames===i?'selected':''}>${i}</option>`).join('')}</select></label>
             <span class="muted">latent frames (of ${({longlive:12, memflow:12, 'reward-forcing':9})[S.pipeline] || 6} in memory)</span>
@@ -475,6 +476,7 @@ world.addEventListener('change', e => {
   else if (act === 'person-seg') setP({person_seg: e.target.checked});
   else if (act === 'clean-every') setP(+v === 0 ? {skip_clean_kv: true, clean_kv_every: 1} : {skip_clean_kv: false, clean_kv_every: +v});
   else if (act === 'attn-backend') setP({attention_backend: v});
+  else if (act === 'vace-reuse') setP({vace_hint_reuse: e.target.checked});
   else if (act === 'feedback-mode') setP({feedback_mode: e.target.value});
   else if (act === 'depth-stride') setP({depth_stride: +e.target.value});
   else if (['zoom', 'y_offset', 'sharpen', 'depth_cutoff', 'place_scale', 'place_x', 'place_y', 'person_hint', 'depth_keep', 'feedback', 'feedback_motion'].includes(act)) e.target.blur();

@@ -126,7 +126,7 @@ state = {"preset": args.preset, "fps": 0.0, "upscale": None, "noise": args.noise
          # scene placement: the person shrunk to place_scale of the frame at (place_x, place_y); 1 = off
          "place_scale": 1.0, "place_x": 0.5, "place_y": 0.6,
          # person hint: with depth on, pull the person's region toward the camera image (identity) 0..1
-         "person_hint": 0.0, "depth_keep": 0.0, "person_seg": False, "place_fade_bottom": 0.12, "place_ground": False, "depth_stride": 4, "feedback": 0.0, "feedback_mode": "last", "feedback_motion": 1.0, "skip_clean_kv": False, "clean_kv_every": 1, "attention_backend": "default",
+         "person_hint": 0.0, "depth_keep": 0.0, "person_seg": False, "place_fade_bottom": 0.12, "place_ground": False, "depth_stride": 4, "feedback": 0.0, "feedback_mode": "last", "feedback_motion": 1.0, "skip_clean_kv": False, "clean_kv_every": 1, "attention_backend": "default", "vace_hint_reuse": False,
          "prompt": args.prompt, "ref": [str(Path(r).resolve()) for r in args.ref] if args.ref else []}
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 TMP = Path(__file__).resolve().parents[1] / ".tmp"
@@ -135,7 +135,7 @@ OVERRIDES = {"depth": None, "steps": None, "start": None, "vace_scale": args.vac
              "attn": {"sink": 1.0, "recent": 1.0, "current": 1.0, "text": 1.0}, "attn_on": True,
              "upscale_override": None, "vace_input": False, "sink_frames": None, "noise_controller": False,
              "transition_steps": 0, "zoom": 1.0, "y_offset": 0.0, "sharpen": 0.6, "depth_cutoff": 0.0, "sink_refresh_s": 0.0, "place_scale": 1.0, "place_x": 0.5,
-             "place_y": 0.6, "person_hint": 0.0, "depth_keep": 0.0, "person_seg": False, "place_fade_bottom": 0.12, "place_ground": False, "depth_stride": 4, "feedback": 0.0, "feedback_mode": "last", "feedback_motion": 1.0, "skip_clean_kv": False, "clean_kv_every": 1, "attention_backend": "default", "noise": args.noise_scale,
+             "place_y": 0.6, "person_hint": 0.0, "depth_keep": 0.0, "person_seg": False, "place_fade_bottom": 0.12, "place_ground": False, "depth_stride": 4, "feedback": 0.0, "feedback_mode": "last", "feedback_motion": 1.0, "skip_clean_kv": False, "clean_kv_every": 1, "attention_backend": "default", "vace_hint_reuse": False, "noise": args.noise_scale,
              "ref_source": "ref", "start_source": "start"}
 if TEXT_MODEL:  # LongLive 2.0 defaults: clean pass every 2nd chunk (exact attention = "default" there)
     OVERRIDES["clean_kv_every"] = state["clean_kv_every"] = 2
@@ -236,7 +236,7 @@ def preset_params(preset: int, with_ref: bool) -> dict:
         "depth_stride": state["depth_stride"],
         "feedback": state["feedback"], "feedback_mode": state["feedback_mode"], "feedback_motion": state["feedback_motion"],
         "skip_clean_kv": state["skip_clean_kv"], "clean_kv_every": state["clean_kv_every"],
-        "attention_backend": state["attention_backend"],
+        "attention_backend": state["attention_backend"], "vace_hint_reuse": state["vace_hint_reuse"],
         "vace_use_input_video": state["vace_input"] and not effective_depth(preset),
         "reset_cache": True,
     }
@@ -716,7 +716,7 @@ async def main() -> None:
                  "sharpen": state["sharpen"], "depth_cutoff": state["depth_cutoff"], "sink_refresh_s": state["sink_refresh_s"], "place_scale": state["place_scale"],
                  "place_x": state["place_x"], "place_y": state["place_y"], "person_hint": state["person_hint"],
                  "depth_keep": state["depth_keep"], "person_seg": state["person_seg"], "place_fade_bottom": state["place_fade_bottom"], "place_ground": state["place_ground"],
-                 "depth_stride": state["depth_stride"], "feedback": state["feedback"], "feedback_mode": state["feedback_mode"], "feedback_motion": state["feedback_motion"], "skip_clean_kv": state["skip_clean_kv"], "clean_kv_every": state["clean_kv_every"], "attention_backend": state["attention_backend"], "launch": launch_settings(),
+                 "depth_stride": state["depth_stride"], "feedback": state["feedback"], "feedback_mode": state["feedback_mode"], "feedback_motion": state["feedback_motion"], "skip_clean_kv": state["skip_clean_kv"], "clean_kv_every": state["clean_kv_every"], "attention_backend": state["attention_backend"], "vace_hint_reuse": state["vace_hint_reuse"], "launch": launch_settings(),
                  "output_warning": state.get("output_warning"),
                  "ref": [Path(r).name for r in state["ref"]],
                  "refs": sorted(f.name for f in ASSETS.glob("*.png"))}))
@@ -802,6 +802,9 @@ async def main() -> None:
                 if body.get("feedback_mode") in ("last", "chunk", "extrapolate"):  # output feedback: reuse newest frame or whole chunk
                     state["feedback_mode"] = body["feedback_mode"]
                     update["feedback_mode"] = state["feedback_mode"]
+                if "vace_hint_reuse" in body:  # reuse step-1 depth/VACE hints for later steps (faster multi-step)
+                    state["vace_hint_reuse"] = bool(body["vace_hint_reuse"])
+                    update["vace_hint_reuse"] = state["vace_hint_reuse"]
                 if "clean_kv_every" in body:  # clean pass on every Nth chunk (1 = every chunk)
                     state["clean_kv_every"] = max(1, min(4, int(body["clean_kv_every"])))
                     update["clean_kv_every"] = state["clean_kv_every"]
