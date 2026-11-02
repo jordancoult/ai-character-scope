@@ -194,7 +194,7 @@ class FaceFixer:
         a = fp.parse_args([*method, "--lp-size", str(args.facefix_size), "--restore",
                            args.facefix_restore, "--compile", *shlex.split(args.facefix_extra)])
         self.fp = facefix.make_pass(a)
-        self.pool_in, self.pool_an, self.pool_gpu = (ThreadPoolExecutor(1) for _ in range(3))
+        self.pool_in, self.pool_an, self.pool_gpu, self.pool_cmp = (ThreadPoolExecutor(1) for _ in range(4))
         self.inputs = collections.OrderedDict()          # seq -> (frame, future of analyze_input)
         self.stats = collections.Counter()
         self.last_info = None
@@ -230,12 +230,19 @@ class FaceFixer:
             if job["cancel"]:
                 self.stats["skipped_late"] += 1
                 return None
-            t = time.perf_counter()
-            res, info = self.fp.render(st)
-            self.ms.append(1000 * (time.perf_counter() - t))
+            return self.fp.render_gpu(st), time.perf_counter()
+
+        fg = self.pool_gpu.submit(render)
+
+        def compose():                                   # CPU paste in its own thread: GPU starts the next frame
+            r = fg.result()
+            if r is None or job["cancel"]:
+                return None
+            res, info = self.fp.compose(r[0])
+            self.ms.append(1000 * (time.perf_counter() - r[0]["t1"]))
             job["info"] = {k: info.get(k) for k in ("weight", "target", "src", "gates")}
             return res
-        job["fut"] = self.pool_gpu.submit(render)
+        job["fut"] = self.pool_cmp.submit(compose)
         return job
 
     def take(self, job):

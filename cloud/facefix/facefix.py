@@ -372,6 +372,135 @@ def lower_ramp(n, lo=0.36, hi=0.58):
     return np.clip((y - lo) / (hi - lo), 0, 1)[:, None] * np.ones((1, n), np.float32)
 
 
+def mouth_geom(pts, width_k=1.0, top_k=1.5):
+    """Mouth/chin mask geometry from face landmarks: [mx, my, half_width, y_top, y_bottom, angle] with (mx, my) the
+    mouth centre, y offsets along the mouth's down axis (top: towards the nose, bottom: below the chin + 25 %)."""
+    L, R, top, chin, c13, c14 = pts[61], pts[291], pts[2], pts[152], pts[13], pts[14]
+    mw = np.linalg.norm(R - L)
+    ux = (R - L) / (mw + 1e-6)
+    uy = np.array([-ux[1], ux[0]])
+    if uy @ (chin - top) < 0:
+        uy = -uy
+    mc = (L + R + c13 + c14) / 4
+    y_top = (top - mc) @ uy * top_k
+    y_bot = (chin - mc) @ uy
+    y_bot += 0.25 * (y_bot - (top - mc) @ uy)
+    return np.array([mc[0], mc[1], width_k * mw, y_top, y_bot, np.arctan2(ux[1], ux[0])])
+
+
+def mask_from_geom(g, w, h, feather=5.0, shape="box"):
+    """Soft mask (ROI + float mask) for a mouth geometry. shape box = rounded rectangle (superellipse p=5), wide
+    mouths like G-Star's; ellipse = p=2."""
+    mx, my, hw, yt, yb, ang = g
+    ux = np.array([np.cos(ang), np.sin(ang)])
+    uy = np.array([-ux[1], ux[0]])
+    c = np.array([mx, my]) + uy * (yt + yb) / 2
+    ax, ay = hw, (yb - yt) / 2
+    r = int(np.hypot(ax, ay) + 2 * feather + 4)
+    x0, y0 = max(int(c[0]) - r, 0), max(int(c[1]) - r, 0)
+    x1, y1 = min(int(c[0]) + r, w), min(int(c[1]) + r, h)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return 0, 0, 1, 1, np.zeros((1, 1), np.float32)
+    sh = 1.5 * feather                               # shrink so the blur tail stays inside the outline
+    p = 5.0 if shape == "box" else 2.0
+    t = np.linspace(0, 2 * np.pi, 72, endpoint=False)
+    ct, st_ = np.cos(t), np.sin(t)
+    u = max(ax - sh, 1) * np.sign(ct) * np.abs(ct) ** (2 / p)
+    v = max(ay - sh, 1) * np.sign(st_) * np.abs(st_) ** (2 / p)
+    poly = np.stack([c[0] + u * ux[0] + v * uy[0] - x0, c[1] + u * ux[1] + v * uy[1] - y0], 1)
+    inside = np.zeros((y1 - y0, x1 - x0), np.float32)
+    cv2.fillPoly(inside, [np.round(poly * 4).astype(np.int32)], 1.0, cv2.LINE_AA, shift=2)
+    m = cv2.GaussianBlur(inside, (0, 0), feather / 2)
+    m[m < 1e-3] = 0
+    return x0, y0, x1, y1, m
+
+
+class RelTrack:
+    """Geometry tracked relative to the INPUT face (stable, real) and filtered hard. A measurement on the generated
+    face is rejected as a tracking error if it jumps more than `jump` face sizes from the previous measurement, or
+    lands more than 2.5x that from the current state (or its size changes > 25 %); the state is then held and the
+    caller fades the effect out. Accepted measurements are blended in with an adaptive EMA (alpha .. 0.6 when it
+    moves consistently). A new position that persists `persist` frames is taken as real (a "switch")."""
+
+    def __init__(self, alpha=0.15, jump=0.08, persist=10, confirm=3, size_idx=2):
+        self.alpha, self.jump, self.persist, self.confirm, self.si = alpha, jump, persist, confirm, size_idx
+        self.v, self.prev, self.cand, self.bad = None, None, [], 0
+        self.stats = {"accepted": 0, "rejected": 0, "switches": 0, "missing": 0}
+
+    def dist(self, a, b):
+        return np.linalg.norm(a[:2] - b[:2]), abs(a[self.si] / (b[self.si] + 1e-9) - 1)
+
+    def close(self, a, b, k=1.0):
+        d, ds = self.dist(a, b)
+        return d < k * self.jump and ds < 0.25
+
+    def update(self, m):
+        if m is None:
+            self.stats["missing"] += 1
+            self.bad += 1
+            self.prev = None
+            return self.v, False
+        prev, self.prev = self.prev, m
+        if self.v is None:
+            self.cand = [c for c in self.cand if self.close(c, m)] + [m]
+            if len(self.cand) >= self.confirm:
+                self.v = np.mean(self.cand, 0)
+                self.cand = []
+            return self.v, self.v is not None
+        jumped = prev is not None and not self.close(m, prev)
+        if not jumped and self.close(m, self.v, 2.5):
+            d = m - self.v
+            d[-1] = (d[-1] + np.pi) % (2 * np.pi) - np.pi
+            k = float(np.clip(self.alpha + 0.3 * self.dist(m, self.v)[0] / self.jump, self.alpha, 0.6))
+            self.v = self.v + k * d
+            self.bad = 0
+            self.cand = []
+            self.stats["accepted"] += 1
+            return self.v, True
+        self.stats["rejected"] += 1
+        self.cand = [c for c in self.cand if self.close(c, m)] + [m]
+        if len(self.cand) >= self.persist:                # it stayed there: a real change
+            self.v, self.cand = np.mean(self.cand[-self.confirm:], 0), []
+            self.stats["switches"] += 1
+            return self.v, True
+        self.bad += 1
+        return self.v, False
+
+
+def face_frame(f):
+    """Reference frame of the (input) face: origin at the nose, scale = face size, angle = eye line."""
+    p = f.pts
+    el, er = p[[33, 133]].mean(0), p[[362, 263]].mean(0)
+    return p[[1, 4, 6, 168]].mean(0), f.size, np.arctan2(er[1] - el[1], er[0] - el[0])   # nose: rigid, not the jaw
+
+
+def to_rel(v, fr, pos=(0, 1), lens=(), ang_idx=-1):
+    o, s, a = fr
+    c, sn = np.cos(-a), np.sin(-a)
+    r = np.array(v, float).copy()
+    d = r[list(pos)] - o
+    r[list(pos)] = np.array([c * d[0] - sn * d[1], sn * d[0] + c * d[1]]) / s
+    for i in lens:
+        r[i] /= s
+    r[ang_idx] = (r[ang_idx] - a + np.pi) % (2 * np.pi) - np.pi
+    return r
+
+
+def from_rel(r, fr, pos=(0, 1), lens=(), ang_idx=-1):
+    o, s, a = fr
+    c, sn = np.cos(a), np.sin(a)
+    v = np.array(r, float).copy()
+    d = v[list(pos)] * s
+    v[list(pos)] = o + np.array([c * d[0] - sn * d[1], sn * d[0] + c * d[1]])
+    for i in lens:
+        v[i] *= s
+    v[ang_idx] = v[ang_idx] + a
+    return v
+
+
+GEOM_LENS, RECT_LENS = (2, 3, 4), (2,)
+
+
 class OneEuro:
     """One-Euro filter on arrays (landmarks): smooths jitter at rest, follows fast moves without lag."""
 
@@ -420,6 +549,10 @@ class FacePass:
             (lower_ramp(g) if a.mask == "lower" else 1.0)
         self.weight, self.rect, self.last_in, self.rin = 0.0, None, None, None   # last_in: (in256, rin) for fading out on loss
         self.euro_in, self.euro_out = OneEuro(a.euro_cutoff, a.euro_beta), OneEuro(a.euro_cutoff, a.euro_beta)
+        self.trk_rect = RelTrack(a.track_alpha, a.track_jump, a.track_persist)
+        self.trk_mask = RelTrack(a.track_alpha, a.track_jump, a.track_persist)
+        self.mask_geom = None
+        self.last_mask = None
 
     def smooth_rect(self, rect):
         if rect is None or self.rect is None:
@@ -471,12 +604,35 @@ class FacePass:
             rect[2] *= a.box_scale
             rect[1] += a.box_dy * rect[2]
             gates["mapped"] = a.mapped_weight
+        meas_geom = None
+        if a.stabilize and fi is not None:
+            # crop rect and mouth mask relative to the input face, hard-filtered (G-Star's landmarks jump around)
+            fr = face_frame(fi)
+            ok_out = fo is not None and np.linalg.norm(fo.center - fi.center) < a.max_offset * fi.size
+            mr = crop_rect(fo.pts, a.crop_scale) if ok_out else None
+            meas_geom = mouth_geom(fo.pts, a.chin_width, a.chin_top) if ok_out else None
+            vr, okr = self.trk_rect.update(None if mr is None else to_rel(mr, fr, lens=RECT_LENS))
+            vg, okg = self.trk_mask.update(None if meas_geom is None else to_rel(meas_geom, fr, lens=GEOM_LENS))
+            if vr is not None and vg is not None:
+                rect = from_rel(vr, fr, lens=RECT_LENS)
+                self.mask_geom = from_rel(vg, fr, lens=GEOM_LENS)
+                # rejected (jumped / wrong place): hold the geometry and fade out; output face merely not found
+                # for a few frames: the input-anchored geometry is a good prior, keep going for up to 8 frames
+                held = mr is None and self.trk_mask.bad <= a.track_hold
+                gates["track"] = 1.0 if (okr and okg) or held else 0.0
+                gates.pop("mapped", None)
+            else:
+                gates["track"] = 0.0                               # not locked yet
+            info["fsize"] = round(float(fi.size), 1)
+            info["mask_geom"] = None if self.mask_geom is None else [round(float(x), 2) for x in self.mask_geom]
+            info["meas_geom"] = None if meas_geom is None else [round(float(x), 2) for x in meas_geom]
         target = float(np.prod([float(v) for v in gates.values()])) if fi is not None and rect is not None else 0.0
         rate = a.fade_in if target > self.weight else a.fade_out
         self.weight += rate * (target - self.weight)
         if self.weight < 0.02 and target == 0:
             self.weight = 0.0
-        rect = self.smooth_rect(rect)
+        if not a.stabilize:
+            rect = self.smooth_rect(rect)
         if rect is not None:
             self.rect = rect
         if fi is not None and self.rt is not None:
@@ -491,28 +647,46 @@ class FacePass:
         rpts = fo.pts if fo is not None else (fi.pts if fi is not None else None)
         return {"O": O, "I": I, "fi_pts": fi.pts if fi is not None else None,
                 "fo_pts": fo.pts if fo is not None else None, "info": info, "weight": self.weight, "rect": None if self.rect is None else self.rect.copy(),
-                "cin": self.last_in, "pts": rpts}
+                "cin": self.last_in, "pts": rpts,
+                "mask_geom": None if self.mask_geom is None else self.mask_geom.copy()}
 
     def render(self, st):
-        """GPU part: retarget + paste + optional restoration, using the state from analyze()."""
-        a, O, info = self.a, st["O"], st["info"]
-        h, w = O.shape[:2]
-        wgt, rect, cin = st["weight"], st["rect"], st["cin"]
-        t1 = time.perf_counter()
-        res = O
-        if self.rt is not None and wgt > 0.01 and rect is not None and cin is not None:
+        """GPU render + CPU compose (the live bridge runs the two in separate threads)."""
+        return self.compose(self.render_gpu(st))
+
+    def render_gpu(self, st):
+        """GPU part: LivePortrait render of the output face with the input's lips (skipped at weight ~0)."""
+        st = dict(st)
+        st["t1"] = time.perf_counter()
+        st["gen"] = None
+        if self.rt is not None and st["weight"] > 0.01 and st["rect"] is not None and st["cin"] is not None:
             g = self.rt.gen
-            Mo = rect_to_M(rect, g)
-            cg = cv2.warpAffine(O, Mo, (g, g), borderMode=cv2.BORDER_REPLICATE)
+            Mo = rect_to_M(st["rect"], g)
+            cg = cv2.warpAffine(st["O"], Mo, (g, g), borderMode=cv2.BORDER_REPLICATE)
             c256 = cv2.cvtColor(cv2.resize(cg, (256, 256), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB)
             clp = cv2.cvtColor(cv2.resize(cg, (self.rt.lp, self.rt.lp), interpolation=cv2.INTER_AREA),
                                cv2.COLOR_BGR2RGB) if self.rt.lp != 256 else None
-            gen = cv2.cvtColor(self.rt(cin, c256, clp), cv2.COLOR_RGB2BGR)
+            st["gen"], st["Mo"] = cv2.cvtColor(self.rt(st["cin"], c256, clp), cv2.COLOR_RGB2BGR), Mo
+        return st
+
+    def compose(self, st):
+        """CPU part: mask, colour match, detail transfer, paste, optional restoration."""
+        a, O, info = self.a, st["O"], st["info"]
+        h, w = O.shape[:2]
+        wgt, rect = st["weight"], st["rect"]
+        self.last_mask = None
+        t1 = st["t1"]
+        res = O
+        if st["gen"] is not None:
+            g, gen, Mo = self.rt.gen, st["gen"], st["Mo"]
             Minv = cv2.invertAffineTransform(Mo)
             fpts = st["fo_pts"] if st["fo_pts"] is not None else st["fi_pts"]
-            if a.mask == "chin" and fpts is not None:
+            if a.mask == "chin" and (st.get("mask_geom") is not None or fpts is not None):
                 # tight mask below the nose in frame pixels: everything else stays JoyAI's, pixel-identical
-                x0, y0, x1, y1, m = self.chin_mask(fpts, w, h, a.feather, a.chin_top, a.chin_width)
+                geom = st["mask_geom"] if st.get("mask_geom") is not None else \
+                    mouth_geom(fpts, a.chin_width, a.chin_top)
+                x0, y0, x1, y1, m = mask_from_geom(geom, w, h, a.feather, a.mask_shape)
+                self.last_mask = (x0, y0, m)
             else:
                 mk = self.mask
                 if a.mask == "mouth" and fpts is not None:
@@ -526,15 +700,17 @@ class FacePass:
             back = cv2.warpAffine(gen, Mr, (x1 - x0, y1 - y0), flags=cv2.INTER_CUBIC,
                                   borderMode=cv2.BORDER_REPLICATE).astype(np.float32)   # one resampling step
             roi = O[y0:y1, x0:x1].astype(np.float32)
-            ws = m.sum() + 1e-6                                # colour-match the render to JoyAI inside the mask
-            back += ((roi * m[..., None]).sum((0, 1)) - (back * m[..., None]).sum((0, 1))) / ws
+            m4 = m[::4, ::4, None]                             # colour-match the render to JoyAI inside the mask
+            ws = m4.sum() + 1e-6                               # (stats on a 4x subsampled grid: cheap)
+            back += ((roi[::4, ::4] * m4).sum((0, 1)) - (back[::4, ::4] * m4).sum((0, 1))) / ws
             if a.detail == "sep":
                 # frequency separation: low band from the render, high band (texture, edges) from JoyAI where
                 # both agree at low frequency; where they differ (open-mouth interior, moved lips) the render's
                 # full band is used
                 sg = a.detail_sigma
                 lb, lo = cv2.GaussianBlur(back, (0, 0), sg), cv2.GaussianBlur(roi, (0, 0), sg)
-                k = np.clip(1 - np.abs(lb - lo).mean(2, keepdims=True) / a.detail_thr, 0, 1)
+                dd = cv2.cvtColor(cv2.absdiff(lb, lo), cv2.COLOR_BGR2GRAY)
+                k = np.clip(1 - dd * (1.0 / a.detail_thr), 0, 1)[..., None]
                 back = lb + k * (roi - lo) + (1 - k) * (1 + a.render_sharpen) * (back - lb)
             mm = (m * wgt)[..., None]
             res = O.copy()
@@ -542,10 +718,13 @@ class FacePass:
             if a.mask == "chin":                               # outside the mask: exactly JoyAI's pixels
                 out = mm[..., 0] <= 0
                 res[y0:y1, x0:x1][out] = O[y0:y1, x0:x1][out]
-                e = fpts[[70, 105, 107, 336, 334, 300, 33, 133, 145, 362, 263, 374]]
-                ex0, ey0 = np.maximum(e.min(0).astype(int) - 5, 0)
-                ex1, ey1 = e.max(0).astype(int) + 5
-                info["eye_diff"] = int(np.abs(res[ey0:ey1, ex0:ex1].astype(int) - O[ey0:ey1, ex0:ex1]).max())
+                ep = st["fo_pts"] if st["fo_pts"] is not None else fpts
+                if ep is not None:                             # verify: eyes/brows untouched
+                    e = ep[[70, 105, 107, 336, 334, 300, 33, 133, 145, 362, 263, 374]]
+                    ex0, ey0 = np.maximum(e.min(0).astype(int) - 5, 0)
+                    ex1, ey1 = e.max(0).astype(int) + 5
+                    if ex1 > ex0 and ey1 > ey0:
+                        info["eye_diff"] = int(np.abs(res[ey0:ey1, ex0:ex1].astype(int) - O[ey0:ey1, ex0:ex1]).max())
         t2 = time.perf_counter()
         if a.restore == "sharpen" and rect is not None and wgt > 0.01:
             res = sharpen(res, rect, a.sharpen * wgt)
@@ -648,7 +827,17 @@ def add_args(p):
                    help="lp: chin = below the nose only, rest pixel-identical to JoyAI (default); face / lower half / "
                         "mouth ellipse = older variants")
     p.add_argument("--feather", type=float, default=5.0, help="chin mask feather in frame pixels")
-    p.add_argument("--chin-width", type=float, default=1.0, help="mask half-width in mouth widths")
+    p.add_argument("--chin-width", type=float, default=1.2, help="mask half-width in mouth widths (G-Star's grin runs past the detected corners)")
+    p.add_argument("--mask-shape", default="box", choices=["box", "ellipse"], help="chin mask: rounded rectangle "
+                   "(wide mouths, G-Star) or ellipse")
+    p.add_argument("--no-stabilize", dest="stabilize", action="store_false", help="per-frame crop/mask from the "
+                   "output landmarks (old behaviour) instead of input-anchored, jump-rejecting tracks")
+    p.add_argument("--track-alpha", type=float, default=0.15, help="EMA rate of accepted crop/mask measurements")
+    p.add_argument("--track-jump", type=float, default=0.08, help="reject measurements that move more than this "
+                   "many face sizes (tracking errors)")
+    p.add_argument("--track-hold", type=int, default=8, help="frames to keep the effect on the held geometry while "
+                   "the generated face is not detected")
+    p.add_argument("--track-persist", type=int, default=10, help="frames a jump must persist to be taken as real")
     p.add_argument("--chin-top", type=float, default=1.5, help="mask top as a multiple of the mouth->subnasale "
                    "distance (1 = at the nose; >1 reaches above it)")
     p.add_argument("--detail", default="sep", choices=["sep", "none"],
@@ -694,6 +883,7 @@ def main():
     p.add_argument("--seq-json", default=None, help="joyai_client --stats JSON with source_seq: exact pairing "
                    "(output i was made from input source_seq[i]-1); overrides --align")
     p.add_argument("--max-frames", type=int, default=0)
+    p.add_argument("--debug-mask", action="store_true", help="draw the paste mask outline in --sbs / --zoom")
     p.add_argument("--eval-id", action="store_true", help="swap: ArcFace cosine to the ref every 5th frame")
     p.add_argument("--pipeline", action="store_true", help="overlap analyze (CPU, next frame) with render (GPU) "
                    "in two threads, like the live bridge would; reports wall-clock fps")
@@ -739,8 +929,15 @@ def main():
         T.append(1000 * (time.perf_counter() - t))
         infos.append(info)
         wr.write(res)
+        shown = res
+        if a.debug_mask and getattr(fp, "last_mask", None) is not None:
+            x0, y0, m = fp.last_mask
+            shown = res.copy()
+            for lvl, col in ((0.05, (0, 200, 255)), (0.5, (0, 255, 0))):
+                cs, _ = cv2.findContours((m > lvl).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(shown, [c + (x0, y0) for c in cs], -1, col, 1, cv2.LINE_AA)
         if sbs:
-            sbs.write(np.hstack([I, O, overlay(res, info)]))
+            sbs.write(np.hstack([I, O, overlay(shown, info)]))
         if zoom:
             if fp.rect is not None:
                 zr = fp.rect.copy()
@@ -752,7 +949,7 @@ def main():
                     zi[1] += 0.07 * zi[2]
                     zi[2] *= 0.6
                 zoom_last = np.hstack([cv2.warpAffine(I, rect_to_M(zi, 320), (320, 320)), cv2.warpAffine(O, Mz, (320, 320)),
-                                       overlay(cv2.warpAffine(res, Mz, (320, 320)), info)])
+                                       overlay(cv2.warpAffine(shown, Mz, (320, 320)), info)])
             zoom.write(zoom_last)
         if j % 100 == 0:
             print(f"[facefix] {j}/{len(outs)} {info['src']} w={info['weight']} {np.mean(T[-100:]):.1f} ms/frame",
@@ -771,6 +968,8 @@ def main():
            "active_frac": round(float(active.mean()), 3),
            "mean_weight": round(float(np.mean([i["weight"] for i in infos])), 3),
            "src": {k: sum(i["src"] == k for i in infos) for k in ("out", "in", "none")}}
+    if hasattr(fp, "trk_mask") and a.stabilize:
+        res["track_mask"], res["track_rect"] = fp.trk_mask.stats, fp.trk_rect.stats
     ed = [i["eye_diff"] for i in infos if "eye_diff" in i]
     if ed:
         res["eye_region_max_abs_diff"] = int(max(ed))

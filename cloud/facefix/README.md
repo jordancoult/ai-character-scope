@@ -177,6 +177,43 @@ ms/frame unchanged (render 25–30 ms, 31–34 fps pipelined incl. writing). `--
 Review videos: `review_static_zoom.mp4`, `review_talking_zoom.mp4` (JoyAI raw | before | after, zoomed) and the
 `_full` versions. A live confirmation run didn't start (server busy).
 
+## G-Star: jumping mask → wide box, input-anchored tracking (`experiments/2026-11-02-gstar-mask/`)
+User report: the ellipse visibly jumped around on G-Star as MediaPipe lost him or locked onto another spot.
+- `--mask-shape box` (default): rounded rectangle (superellipse p=5), half-width 1.2 mouth widths (G-Star's grin runs
+  past the detected corners), top at 1.5× the mouth→nose distance, 5 px feather. Eyes/brows still pixel-identical
+  (max abs diff 0 on every clip).
+- **Tracking relative to the input face** (`RelTrack`, on by default; `--no-stabilize` = old per-frame behaviour):
+  the crop rect and the mask geometry are stored relative to the real face (origin at the nose, scale = face size,
+  angle = eye line; One-Euro-smoothed), so they move with the stable real head. A measurement on the generated face
+  is rejected if it jumps > 8 % of the face size from the previous measurement or lands > 20 % from the state, or the
+  size changes > 25 % (`--track-jump 0.08`); accepted ones are blended in with an adaptive EMA (0.15 → 0.6 on
+  consistent motion); a new position that persists 10 frames is taken as real ("switch"). On a rejection the
+  geometry is held and the effect fades out; if the generated face is merely not detected, the held,
+  input-anchored geometry keeps the effect for up to 8 frames (`--track-hold`), then fades.
+- The same tracker drives the LivePortrait crop (a jumping crop also jumped the render).
+- The render is split into a GPU stage and a CPU compose stage (separate threads in the bridge), and the compose step
+  got cheaper (polygon mask, subsampled colour stats, cv2 detail transfer): 36 → 30 ms per frame end to end.
+- Fixed a crash when both faces vanish during a fade (bridge played raw frames on the exception).
+
+Mask-centre motion per frame in % of face size (std / max / count of jumps > 8 % while visible), per-frame
+measurement on the generated face (= old behaviour) vs tracked:
+
+| Clip | Per-frame (old) | Tracked (new) | Tracker: rejected / switches / missing | Mean weight | Lip sync |
+|---|---|---|---|---|---|
+| talking G-Star (exact pairing) | 0.78 / 7.2 / 0 | 0.79 / **4.8** / 0 | 0 / 0 / 31 | 0.98 | **0.67** (0.72 unstabilised) |
+| static open mouth | 0.54 / 11.1 / 1 | **0.30** / 8.7 (one start-up frame at w 0.5) / 0 visible | 2 / 0 / 6 | 0.99 | — |
+| desk, portrait (DTW pairing) | 1.14 / 15.3 / 3 | **0.70 / 7.9 / 0** | 4 / 0 / 50 | 0.88 | — |
+| desk, landscape (DTW pairing, gestures) | 1.91 / 14.0 / 14 | 1.95 / 24.7 / 14* | 54 / 2 / 133 | 0.79 | — |
+| boxer (side-on) | — | — | effect off (weight 0), as before | 0.00 | — |
+
+\* the desk-landscape steps follow the real head (fast gestures; the offline DTW pairing skips 2–3 input frames at
+once); the large ones (16–25 %) happen while the effect is faded in from 0 (weight ≤ 0.25).
+Live (real server, G-Star portrait, new `gstar.txt`, talking clip, 45 s): refined in time **97.6 %** (7 held, 21 raw),
+render+compose 39 ms under load (it was 40.7 ms and 58 % in time before the split/optimisation), glass-to-glass
+957 / 1269 ms, lip sync 0.60, 13 repeated / 0 dropped frames.
+Review: `review_dbg_*.mp4` (face close-ups with the mask outline: orange = edge, green = 50 %), `review_clean_*.mp4`
+(JoyAI | refined), `review_live.mp4`, `sheet_dbg_*.jpg`.
+
 ## Licenses (for the record; the project is academic, so non-commercial models are allowed)
 | Component | License | OK? |
 |---|---|---|

@@ -86,6 +86,12 @@ class SwapPass(FacePass):
         e = self.arc(torch.from_numpy((x - 127.5) / 127.5).permute(2, 0, 1)[None].cuda())[0].float().cpu().numpy()
         return float(e @ self.ref_emb / np.linalg.norm(e))
 
+    def render_gpu(self, st):        # swap: one stage (fast enough); the bridge calls render_gpu + compose
+        return st
+
+    def compose(self, st):
+        return self.render(st)
+
     def render(self, st):
         import time
         a, O, info = self.a, st["O"], st["info"]
