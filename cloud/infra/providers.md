@@ -22,3 +22,13 @@ Prices from `experiments/2026-11-01-cloud-gpu-research.md` and RunPod catalog re
 ## Latency by region
 The user is in the US. Measured: laptop → EU-RO-1 adds ~0.2–0.3 s over the 0.46 s pipeline latency. Prefer a US
 host when stock allows.
+
+## Vast.ai specifics (account set up 2026-11-02; helper `cloud/infra/vast.sh`, key in `.secrets/vast_api_key`)
+- **No cross-host storage** (no network volumes). Instance disk survives `stop`, is lost on `destroy`; "local volumes"
+  are pinned to one physical host. So a new host downloads the ~50 GB of weights again (+ artifacts from HF).
+- **Download price is per host** (`inet_down_cost`, $/GB): $0–0.04/GB seen → $0–2 per fresh setup.
+  `vast.sh search` filters `inet_down_cost<=0.02` and ranks by $/h + the 50 GB download amortized over 3 h.
+- **Stopping is not free:** `storage_cost` × 150 GB = **$30–150/month** ($1–5/day) while stopped. Stop for pauses of
+  hours; destroy for pauses longer than ~a day (re-setup ≈ 10–15 min + $0–0.50 download on a cheap host).
+- SSH: `--ssh --direct`; our key is attached per instance (`vastai attach ssh`). Port 8080 mapped with `-p 8080:8080`,
+  but we use an SSH tunnel anyway.
