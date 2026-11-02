@@ -60,6 +60,9 @@ p.add_argument("--facefix", default="off", choices=["off", "abs", "rel", "swap"]
 p.add_argument("--facefix-size", type=int, default=128, choices=[128, 256], help="128: ~25 ms/frame on a 5080 "
                "Laptop; 256: sharper but ~58 ms (too slow for 25 fps)")
 p.add_argument("--facefix-restore", default="none", choices=["none", "sharpen", "gfpgan", "codeformer"])
+p.add_argument("--facefix-wait", type=float, default=15, help="ms the player waits for a late refined frame")
+p.add_argument("--facefix-hold", type=int, default=2, help="on a miss, repeat the last refined frame if it is at "
+               "most this many frames old (instead of popping to the raw frame)")
 p.add_argument("--facefix-extra", default="", help="more facefix.py flags, e.g. '--yaw-hi 45 --no-hands'")
 p.add_argument("--review", default=None, help="also write input | JoyAI | played (facefix) as an mp4 (<=1920 wide)")
 p.add_argument("--save-input", default=None, help="write the frames as sent (generation size) to this mp4 and "
@@ -194,6 +197,7 @@ class FaceFixer:
         self.pool_in, self.pool_an, self.pool_gpu = (ThreadPoolExecutor(1) for _ in range(3))
         self.inputs = collections.OrderedDict()          # seq -> (frame, future of analyze_input)
         self.stats = collections.Counter()
+        self.last_info = None
         self.ms = collections.deque(maxlen=250)
         t = time.time()
         if hasattr(self.fp, "swap"):                     # warm up the swapper (cudnn autotune) in the GPU thread
@@ -227,8 +231,9 @@ class FaceFixer:
                 self.stats["skipped_late"] += 1
                 return None
             t = time.perf_counter()
-            res = self.fp.render(st)[0]
+            res, info = self.fp.render(st)
             self.ms.append(1000 * (time.perf_counter() - t))
+            job["info"] = {k: info.get(k) for k in ("weight", "target", "src", "gates")}
             return res
         job["fut"] = self.pool_gpu.submit(render)
         return job
@@ -238,8 +243,10 @@ class FaceFixer:
         if job is None:
             return None
         f = job["fut"]
+        self.last_info = None
         if f.done() and f.exception() is None and f.result() is not None:
             self.stats["hit"] += 1
+            self.last_info = job.get("info")
             return f.result()
         if f.done() and f.exception() is not None:
             self.stats["error"] += 1
@@ -285,7 +292,7 @@ async def main():
         sink = Sink(args.output, w, h)
         review = FileWriter(args.review, 3 * w, h, args.play_fps) if args.review else None
         saved_in = FileWriter(args.save_input, w, h, args.fps) if args.save_input else None
-        played_seq = []
+        played_seq, played_ff = [], []
         sent_cache = collections.OrderedDict()           # seq -> frame as sent (for --review)
         received = 0
 
@@ -355,6 +362,7 @@ async def main():
 
         async def player():
             last, last_raw, last_seq = None, None, None
+            last_ref, last_ref_n = None, -99
             started = False
             next_t = None
             n = 0
@@ -369,8 +377,18 @@ async def main():
                     last_raw, tcap, job, last_seq = queue.popleft()
                     last = last_raw
                     if ff is not None:
+                        if job is not None and not job["fut"].done():     # give the GPU a few ms
+                            t_dead = time.time() + args.facefix_wait / 1000
+                            while not job["fut"].done() and time.time() < t_dead:
+                                await asyncio.sleep(0.002)
                         last = ff.take(job)
-                        last = last_raw if last is None else last
+                        if last is not None:
+                            last_ref, last_ref_n = last, n
+                        elif last_ref is not None and n - last_ref_n <= args.facefix_hold:
+                            last = last_ref                    # hold the previous refined frame: a raw frame
+                            ff.stats["held"] += 1              # between refined ones pops the mouth
+                        else:
+                            last = last_raw
                     if tcap:
                         lat.append(time.time() * 1000 - tcap)
                     stats["played"] += 1
@@ -379,6 +397,7 @@ async def main():
                 if last is not None:
                     sink.write(last)
                     played_seq.append(last_seq)
+                    played_ff.append(ff.last_info if ff is not None else None)   # None = raw frame (miss/off)
                     if review is not None:
                         inp = sent_cache.get(last_seq)
                         review.write(np.hstack([inp if inp is not None else np.zeros_like(last), last_raw, last]))
@@ -416,7 +435,7 @@ async def main():
                     wr.close()
             if args.save_input:
                 with open(str(Path(args.save_input).with_suffix(".json")), "w") as f:
-                    json.dump({"source_seq": played_seq}, f)
+                    json.dump({"source_seq": played_seq, "facefix": played_ff}, f)
     l = sorted(lat[50:] or lat)
     res = {**stats, "glass_to_glass_median_ms": round(l[len(l) // 2]) if l else None,
            "glass_to_glass_p95_ms": round(l[int(len(l) * 0.95)]) if l else None}

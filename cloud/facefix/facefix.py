@@ -235,7 +235,8 @@ def channels_last(module):
 
 
 class Retargeter:
-    def __init__(self, model="human", region="lip", alpha=1.0, compile=False, lp_size=256, lip_mode="abs"):
+    def __init__(self, model="human", region="lip", alpha=1.0, compile=False, lp_size=256, lip_mode="abs",
+                 anchor=0.0, in_smooth=0.0):
         sys.path.insert(0, str(LP_DIR))
         from src.config.inference_config import InferenceConfig
         from src.live_portrait_wrapper import LivePortraitWrapper
@@ -255,6 +256,7 @@ class Retargeter:
         self.alpha = alpha
         self.lip_mode = lip_mode
         self.neutral = torch.from_numpy(cfg.lip_array).float().to(self.w.device).reshape(1, 21, 3)
+        self.anchor, self.in_smooth, self.base, self.e_in = anchor, in_smooth, None, None
         torch.backends.cudnn.benchmark = True
         self.G = self.w.spade_generator.half()
         if compile:   # ~35 -> 20 ms on the 5080 Laptop; compiling W or the whole step made it slower
@@ -279,10 +281,19 @@ class Retargeter:
         R = self.rot(s["pitch"], s["yaw"], s["roll"])
         x_s = w.transform_keypoint(s)
         exp = s["exp"].clone()
+        e_in = kp["exp"][0:1]
+        if self.in_smooth > 0:         # EMA on the driving keypoints: motion-extractor noise -> mouth shimmer
+            self.e_in = e_in if self.e_in is None else self.in_smooth * self.e_in + (1 - self.in_smooth) * e_in
+            e_in = self.e_in
         if self.lip_mode == "abs":     # the input's expression keypoints replace the output's
-            exp[:, self.idx] = self.alpha * kp["exp"][0:1, self.idx] + (1 - self.alpha) * exp[:, self.idx]
-        else:                          # rel: add the input's deviation from a neutral closed mouth to the output's
-            exp[:, self.idx] += self.alpha * (kp["exp"][0:1, self.idx] - self.neutral[:, self.idx])
+            exp[:, self.idx] = self.alpha * e_in[:, self.idx] + (1 - self.alpha) * exp[:, self.idx]
+        else:                          # rel: input's deviation from a neutral closed mouth added to the output's mouth
+            base = exp
+            if self.anchor > 0:        # ... to a slow average of it, so JoyAI's own per-chunk mouth wobble is
+                self.base = exp.clone() if self.base is None else \
+                    (1 - self.anchor) * self.base + self.anchor * exp       # warped back to a stable mouth
+                base = self.base
+            exp[:, self.idx] = base[:, self.idx] + self.alpha * (e_in[:, self.idx] - self.neutral[:, self.idx])
         x_d = (s["kp"] @ R + exp) * s["scale"][..., None]
         x_d[:, :, :2] += s["t"][:, None, :2]
         x_d = w.stitching(x_s, x_d)
@@ -356,7 +367,7 @@ def sharpen(frame, rect, amount=0.8, sigma=1.2):
 
 
 # ---------------------------------------------------------------- the per-frame pass (offline and live)
-def lower_ramp(n, lo=0.42, hi=0.55):
+def lower_ramp(n, lo=0.36, hi=0.58):
     y = np.linspace(0, 1, n, dtype=np.float32)
     return np.clip((y - lo) / (hi - lo), 0, 1)[:, None] * np.ones((1, n), np.float32)
 
@@ -401,7 +412,8 @@ class FacePass:
         self.a = a
         self.lm_in, self.lm_out = Landmarker(a.num_faces), Landmarker(a.num_faces)
         self.hands = Hands() if a.hands else None
-        self.rt = Retargeter(a.model, a.region, a.alpha, a.compile, a.lp_size, a.lip_mode) if a.region != "none" else None
+        self.rt = Retargeter(a.model, a.region, a.alpha, a.compile, a.lp_size, a.lip_mode,
+                             a.rel_anchor, a.in_smooth) if a.region != "none" else None
         self.rs = Restorer(a.restore, a.fidelity) if a.restore in ("gfpgan", "codeformer", "restoreformer") else None
         g = self.rt.gen if self.rt else 512
         self.mask = (self.rt.face_mask if self.rt else np.ones((g, g), np.float32)) * \
@@ -565,6 +577,9 @@ def add_args(p):
     p.add_argument("--lip-mode", default="abs", choices=["abs", "rel"],
                    help="abs: input lips replace the output's (human refs); rel: input's mouth motion is added to "
                         "the output's own mouth shape (cartoon refs keep their grin)")
+    p.add_argument("--rel-anchor", type=float, default=0.01, help="rel: EMA rate of the output-mouth base "
+                   "(0 = per-frame: JoyAI's mouth wobble passes through; 0.01 = ~4 s average)")
+    p.add_argument("--in-smooth", type=float, default=0.3, help="EMA weight of the previous driving keypoints")
     p.add_argument("--alpha", type=float, default=1.0, help="blend of the input's expression keypoints")
     p.add_argument("--model", default="human", choices=["human", "animal"])
     p.add_argument("--lp-size", type=int, default=256, choices=[128, 256, 384],

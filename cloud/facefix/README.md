@@ -113,6 +113,41 @@ Live (real server, 45 s, test_face_landscape, 30 fps in, 25 fps out), round-1 LP
 Swap through the bridge (mock server): 25 ms render, in time 89 % in a 10 s run (start-up misses). A live swap run on
 the real server is still pending: the server stopped accepting sessions during round 2.
 
+## G-Star "fuzzes around in a cycle" (static-input diagnosis, `experiments/2026-11-02-jitter/`)
+Static input: one frame of webcam_7643311 with the mouth open (jawOpen 0.33, no hands), 9:16 crop, 30 s at
+30 fps, through the real server (portrait 480×840, G-Star) and the bridge, 45 s per run. `jitter.py` measures the
+face region of the review video (input | JoyAI | played): mean abs diff between consecutive frames in the mouth box,
+MediaPipe lip-landmark motion and lip-gap std (% of face size), and the dominant period (autocorrelation of the
+high-passed series; 8 = JoyAI chunk).
+
+| Run | Mouth diff raw → played | Lip step raw → played | Lip-gap std raw → played | Period (raw) | facefix |
+|---|---|---|---|---|---|
+| `--facefix off` | 0.96 → 0.96 | 0.10 → 0.10 % | 0.70 → 0.68 % | 16 frames | — |
+| `rel`, before | 1.18 → **1.93** | 0.12 → **0.22** % | 2.00 → 2.12 % | 16 | 95.8 % in time, **43 raw frames** |
+| `rel`, after (live, anchor 0.05) | 1.39 → **1.49** | 0.165 → **0.154** % | 1.71 → 1.76 % | 16 | 99 % in time, 7 held, 3 raw |
+| offline replay of the same raw JoyAI, anchor 0 / 0.05 / 0.01 / 0.003 | 1.36 → 1.47 / 1.43 / 1.44 / 1.46 | 0.17 → 0.18 / 0.14 / 0.14 / 0.14 | 1.73 → 2.04 / 1.66 / **1.41** / 1.29 | | |
+
+Findings (`plot_*.png`: raw vs played series with an 8-frame grid; `review_compare.mp4` / `_zoom.mp4`: JoyAI raw |
+facefix before | facefix after):
+- **Ours, main cause: misses popped to the raw frame.** When a refined frame wasn't ready at its playout time the
+  bridge played the raw JoyAI frame between refined ones; the mouth jumped (closed → open → closed) for one frame,
+  ~1 per second (the dips in `plot_rel.png`). Fix: the player waits up to `--facefix-wait 15` ms, then repeats the
+  previous refined frame (`--facefix-hold 2` frames) before ever falling back to raw.
+- **Ours, second: `rel` was anchored to the current frame's mouth**, so JoyAI's own mouth wobble passed straight
+  through and LivePortrait added its own on top. Fix: the base is a slow EMA of the output's mouth keypoints
+  (`--rel-anchor 0.01`, about 4 s), driving keypoints smoothed (`--in-smooth 0.3`); with a static input the target
+  mouth is now constant. Lip-gap wobble 2.04 → 1.41 % (below JoyAI's own 1.73 %); lip sync on the talking G-Star clip
+  unchanged (0.70). The lower-face mask ramp is softer (0.36–0.58) to hide the seam under the eyes.
+- Checked and fine: the input facefix sees is constant (input diff 0.01, source_seq steps 1 except the server's own
+  input drops: 2s in ~6 %, never repeats); One-Euro on; blend weight 0.996–0.998 ± 0.02 (no cycling).
+- **JoyAI itself has a cycle:** on a perfectly static input the raw output's mouth region changes by ~1–1.4 grey
+  levels per frame with a dominant period of **16 frames** (two 8-frame chunks, autocorr 0.15–0.3), plus slow
+  open/close drifts of the mouth over 1–2 s. facefix after the fixes follows it at ~1.07× (texture), and damps the
+  mouth-shape part. To remove it at the source (server side, untested): `freeze_kv_on_static` (reuse the temporal
+  KV when the input is static), blending the first frames of each chunk with the previous chunk's last frames
+  (cross-fade at chunk boundaries), a fixed noise seed per session, a smaller `max_temporal_ids` / shorter temporal
+  window, or one more denoising step (E_steps3 run: slower).
+
 ## Licenses (for the record; the project is academic, so non-commercial models are allowed)
 | Component | License | OK? |
 |---|---|---|
