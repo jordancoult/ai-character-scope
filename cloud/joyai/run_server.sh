@@ -8,7 +8,15 @@ J=$W/JoyAI-Video-Edit
 source /root/venv/bin/activate
 export CUDA_HOME=/usr/local/cuda-12.8 PATH=/usr/local/cuda-12.8/bin:$PATH
 GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | tr ' ' '_')
-export JOYOMNI_CACHE_ROOT=${JOYOMNI_CACHE_ROOT:-$W/cache/$GPU}
+# Compile cache: work on fast local disk, seeded from the volume; save_cache.sh copies it back once warm
+# (compiling straight onto the network volume took ~60 min on the first start).
+VC=$W/cache/$GPU
+LC=/root/jcache/$GPU
+if [ -z "${JOYOMNI_CACHE_ROOT:-}" ]; then
+  mkdir -p "$LC"
+  [ -d "$VC" ] && [ ! -e "$LC/.seeded" ] && cp -a "$VC/." "$LC/" && touch "$LC/.seeded"
+  export JOYOMNI_CACHE_ROOT=$LC
+fi
 export JOYOMNI_SAGE_ATTN=${JOYOMNI_SAGE_ATTN:-1}
 export JOYOMNI_FP8_FAST_ACCUM=${JOYOMNI_FP8_FAST_ACCUM:-1}
 export JOYOMNI_LOW_VRAM=${JOYOMNI_LOW_VRAM:-1}
