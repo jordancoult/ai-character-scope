@@ -340,12 +340,15 @@ async def main():
             return
         h, w = m["height"], m["width"]
         print(f"[bridge] session started {w}x{h}; {args.input} -> {args.output}")
-        enc = av.CodecContext.create("libx264", "w")
-        enc.width, enc.height, enc.pix_fmt = w, h, "yuv420p"
-        enc.options = {"preset": "veryfast", "tune": "zerolatency", "crf": str(args.crf), "g": "16",
-                       "x264-params": "scenecut=0:repeat-headers=1:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=tv"}
-        enc.open()
-        dec = av.CodecContext.create("h264", "r")
+        def new_enc():
+            e = av.CodecContext.create("libx264", "w")
+            e.width, e.height, e.pix_fmt = w, h, "yuv420p"
+            e.options = {"preset": "veryfast", "tune": "zerolatency", "crf": str(args.crf), "g": "16",
+                         "x264-params": "scenecut=0:repeat-headers=1:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=tv"}
+            e.open()
+            return e
+        # mutable session state: a prompt change restarts the server session (fresh encoder/decoder, ack counter)
+        sess = {"enc": new_enc(), "dec": av.CodecContext.create("h264", "r"), "new_enc": False}
         sink = Sink(args.output, w, h)
         review = FileWriter(args.review, 3 * w, h, args.play_fps) if args.review else None
         saved_in = FileWriter(args.save_input, w, h, args.fps) if args.save_input else None
@@ -374,7 +377,9 @@ async def main():
                     saved_in.write(frame)
                 vf = av.VideoFrame.from_ndarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), format="rgb24")
                 vf = vf.reformat(format="yuv420p", dst_colorspace="itu709")
-                data = b"".join(bytes(pk) for pk in enc.encode(vf))
+                if sess["new_enc"]:  # session restarted: begin a new GOP so the server's fresh decoder can start
+                    sess["enc"], sess["new_enc"] = new_enc(), False
+                data = b"".join(bytes(pk) for pk in sess["enc"].encode(vf))
                 seq += 1
                 await ws.send(json.dumps({"type": "frame_meta", "seq": seq, "t_capture_ms": time.time() * 1000}))
                 await ws.send(data)
@@ -392,11 +397,15 @@ async def main():
                     j = json.loads(m)
                     if j.get("type") == "output_frame":
                         meta = j
+                    elif j.get("type") == "started":  # after a prompt change / reset
+                        received = 0
+                        sess["dec"] = av.CodecContext.create("h264", "r")
+                        print("[bridge] session restarted", flush=True)
                     elif j.get("type") in ("error", "flow_drop", "session_reset", "no_person"):
                         stats[j["type"]] += 1
                     continue
                 try:
-                    frames = dec.decode(av.Packet(m))
+                    frames = sess["dec"].decode(av.Packet(m))
                 except av.error.InvalidDataError:
                     continue
                 received += 1
@@ -411,6 +420,37 @@ async def main():
                     if old[2] is not None:
                         old[2]["cancel"] = True
                     stats["dropped"] += 1
+
+        async def commands():
+            """Type a new prompt + Enter to change it live; /r = reset memory (same prompt); /q = quit."""
+            if not sys.stdin or not sys.stdin.isatty():
+                return
+            loop = asyncio.get_running_loop()
+            q = asyncio.Queue()
+            import threading
+
+            def reader():
+                for line in sys.stdin:
+                    loop.call_soon_threadsafe(q.put_nowait, line.rstrip("\n"))
+            threading.Thread(target=reader, daemon=True).start()
+            print("[bridge] type a new prompt + Enter to change it; /r = reset memory; /q = quit", flush=True)
+            while not stop.is_set():
+                try:
+                    line = (await asyncio.wait_for(q.get(), timeout=0.5)).strip()
+                except asyncio.TimeoutError:
+                    continue
+                if not line:
+                    continue
+                if line in ("/q", "/quit"):
+                    stop.set()
+                    break
+                if line not in ("/r", "/reset"):
+                    start["prompt"] = line
+                    print(f"[bridge] new prompt: {line[:100]}", flush=True)
+                else:
+                    print("[bridge] resetting memory", flush=True)
+                sess["new_enc"] = True
+                await ws.send(json.dumps(start))
 
         async def pinger():
             while not stop.is_set():
@@ -477,7 +517,7 @@ async def main():
                           flush=True)
 
         try:
-            await asyncio.gather(sender(), receiver(), pinger(), player())
+            await asyncio.gather(sender(), receiver(), pinger(), player(), commands())
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         finally:
