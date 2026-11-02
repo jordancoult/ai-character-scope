@@ -86,6 +86,8 @@ parser.add_argument("--latency-probe", action="store_true",
 parser.add_argument("--record-input", default=None, help="Also save the cropped camera frames sent to Scope (.mp4)")
 parser.add_argument("--duration", type=float, default=0, help="Stop after N seconds (0 = run until Ctrl+C)")
 parser.add_argument("--no-load", action="store_true", help="Skip pipeline load (already loaded)")
+parser.add_argument("--memory-window", type=int, default=None,
+                    help="LongLive 2.0: memory window in latent frames (8-32, default 24; applied at load)")
 args = parser.parse_args()
 IMAGE_INPUT = Path(args.input).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 TEXT_MODEL = args.pipeline in TEXT_MODELS
@@ -202,7 +204,7 @@ def launch_settings() -> dict:
     """Settings that only change on restart: start_scope.sh env vars and bridge load arguments."""
     return {"env": {k: os.environ.get(k) for k in LAUNCH_ENV}, "model": args.pipeline, "size": [H, W],
             "vae": args.vae or ("lighttae" if args.pipeline in LL_FAMILY else "tae"), "seed": args.seed,
-            "input_size": args.input_size}
+            "input_size": args.input_size, "memory_window": args.memory_window}
 
 
 def attention_weights() -> dict:
@@ -277,6 +279,8 @@ async def load_pipeline(client: httpx.AsyncClient) -> None:
     load_params = {"height": H, "width": W, "vae_type": vae, "vace_enabled": True}  # always: depth presets need VACE even without a ref
     if args.seed is not None:
         load_params["base_seed"] = args.seed
+    if args.memory_window and args.pipeline == "longlive2":
+        load_params["local_attn_size"] = max(8, min(32, args.memory_window))
     if args.lora:
         load_params["loras"] = []
         for spec in args.lora:
