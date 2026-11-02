@@ -25,3 +25,13 @@ Startup on a fresh 5090 pod: env ~5 min (cached kernel wheels); first compile ~1
 | `human` (blonde ref, `webcam_7643311`) | 840×480 | 23.4 | 0.69 / 0.89 s | very close identity; hand gestures followed well |
 | `portrait_gstar` (boxer clip, fast side-on motion) | 480×840 | 25.4 | 0.68 / 0.78 s | body/chain transfer; face unstable in profile; a hard non-webcam clip |
 | `portrait_desk` (desk clip cropped 9:16) | **480×840** | **25.6** | **0.68 / 0.78 s** | best G-Star so far: sleepy half-open eyes like the ref, cap, chain, gestures |
+
+## Live bridge (`cloud/client/live_bridge.py`): camera/clip → pod → smooth playout → v4l2 / mp4
+Server output arrives in 8-frame bursts, so playout runs from a jitter buffer with an adaptive rate (±25 %, gain
+0.05 per frame of queue error, target 6 frames). Portrait G-Star, desk clip as camera, 40 s, laptop → EU:
+| Playout | Dropped / repeated | Glass-to-glass median / p95 |
+|---|---|---|
+| fixed 25 fps, buffer 6 | 62 / 0 | 1.36 / 1.41 s (queue crept to 17) |
+| adaptive, gain 0.02, target 8 | 0 / 0 | 1.18 / 1.22 s |
+| **adaptive, gain 0.05, target 6** | **0 / 0** | **1.04 / 1.07 s** |
+Glass-to-glass = capture on the laptop → frame shown by the player (network both ways + model + playout buffer).
