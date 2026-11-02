@@ -13,6 +13,9 @@ import torch
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--video", default="bench/webcam/input.mp4")
+parser.add_argument("--pipeline", default="longlive")
+parser.add_argument("--no-vace", action="store_true")
+parser.add_argument("--clean-every", type=int, default=1)
 parser.add_argument("--size", type=int, nargs=2, default=[576, 320], metavar=("H", "W"))
 parser.add_argument("--steps", type=int, nargs="+", default=[750, 400])
 parser.add_argument("--noise-scale", type=float, default=0.9)
@@ -33,7 +36,7 @@ from scope.server.pipeline_manager import PipelineManager  # noqa: E402
 h, w = args.size
 t0 = time.time()
 pipe = PipelineManager()._load_pipeline_implementation(
-    "longlive", {"height": h, "width": w, "vae_type": args.vae, "vace_enabled": True, "base_seed": args.seed}
+    args.pipeline, {"height": h, "width": w, "vae_type": args.vae, "vace_enabled": not args.no_vace, "base_seed": args.seed}
 )
 load_s = time.time() - t0
 
@@ -69,7 +72,8 @@ if args.out:
 def run(i, first=False):
     s = i * chunk % (video.shape[2] - chunk)
     kw = {"video": video[:, :, s:s + chunk], "prompts": prompts, "denoising_step_list": args.steps,
-          "noise_scale": args.noise_scale, "noise_controller": False, "vace_use_input_video": False}
+          "noise_scale": args.noise_scale, "noise_controller": False, "vace_use_input_video": False,
+          "clean_kv_every": args.clean_every}
     if first and args.ref:
         kw["vace_ref_images"] = [args.ref]
     out = pipe(**kw)["video"]
@@ -97,7 +101,7 @@ if writer is not None:
     writer.wait()
 
 total = sum(times)
-res = {"tag": args.tag, "pipeline": "longlive", "steps": args.steps, "chunk_frames": chunk,
+res = {"tag": args.tag, "pipeline": args.pipeline, "steps": args.steps, "chunk_frames": chunk,
        "fps": round(frames / total, 2), "chunk_ms": round(1000 * total / len(times), 1),
        "peak_vram_gb": round(torch.cuda.max_memory_allocated() / 1e9, 2), "load_s": round(load_s, 1)}
 print("RESULT " + json.dumps(res))

@@ -86,9 +86,13 @@ fi
 export SCOPE_FP8_ROWWISE="${SCOPE_FP8_ROWWISE:-1}"
 export SCOPE_COMPILE_BLOCKS="${SCOPE_COMPILE_BLOCKS:-1}"
 # Fold the clean-KV refresh into the next chunk's forward (one DiT pass per chunk instead of two)
-export SCOPE_FUSED_KV="${SCOPE_FUSED_KV:-1}"
-# LongLive shares the denoise/clean-KV blocks but its model has no fused-prefix support
-case "${MODEL:-streamdiffusionv2}" in longlive|reward-forcing|memflow) export SCOPE_FUSED_KV=0 ;; esac
+# LongLive / Reward Forcing support it too, but off unless asked (SCOPE_FUSED_KV=1); MemFlow never
+# (its clean pass also writes the memory bank).
+case "${MODEL:-streamdiffusionv2}" in
+  longlive|reward-forcing) export SCOPE_FUSED_KV="${SCOPE_FUSED_KV:-0}" ;;
+  memflow) export SCOPE_FUSED_KV=0 ;;
+  *) export SCOPE_FUSED_KV="${SCOPE_FUSED_KV:-1}" ;;
+esac
 export SCOPE_COMPILE_TAE="${SCOPE_COMPILE_TAE:-1}"
 # Tell the model the true noise level (stock Scope says 100 less): removes residual-noise sparkles,
 # 1-step realism 0.50 -> 0.75; LongLive is unusable without it. 100 = stock behavior.
