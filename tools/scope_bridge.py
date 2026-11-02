@@ -678,7 +678,7 @@ async def main() -> None:
         if args.control_port:
             asyncio.ensure_future(poll_temps())
             app = web.Application()
-            # node-graph branch: the graph is the main page (read per request, so edits show on reload)
+            # the graph page is the main page (read per request, so edits show on reload)
             app.router.add_get("/", lambda _: web.Response(text=GRAPH_PAGE.read_text(), content_type="text/html"))
             async def cam_jpg(_):
                 frame = last_cam.get("sent")
@@ -702,7 +702,7 @@ async def main() -> None:
                  "label": ({"longlive": "[LongLive] ", "reward-forcing": "[RewardForcing] ", "memflow": "[MemFlow] ", "longlive2": "[LongLive 2.0] "}.get(args.pipeline, "")) + PRESETS[state["preset"]]["label"], "noise": state["noise"], "noise_mode": state["noise_mode"],
                  "fixed_noise": fixed_noise(state["preset"]), "prompt": state["prompt"],
                  "depth": state["depth"], "depth_on": effective_depth(state["preset"]),
-                 "depth_available": True,  # LongLive gained depth_vace on the node-graph branch
+                 "depth_available": True,  # LongLive has depth_vace in our Scope fork
                  "steps": state["steps"], "n_steps": len(effective_steps(state["preset"])),
                  "start": state["start"], "vace_scale": state["vace_scale"],
                  "attn": state["attn"], "attn_on": state["attn_on"],
