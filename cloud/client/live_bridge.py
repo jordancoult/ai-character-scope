@@ -11,11 +11,11 @@ drops the oldest frames when the queue grows past `--max-buffer` (keeps latency 
   python live_bridge.py ... --output ffplay                    # watch in an ffplay window
 
 Optional face pass on the local GPU (off by default; run with cloud/facefix/.venv/bin/python, see
-cloud/facefix/README.md): --facefix swap (human refs: the real face swapped to the --ref identity and composited in;
-real mouth, best on open mouths) | abs | rel (LivePortrait re-renders the generated mouth with the real lip motion;
-rel for cartoon refs like G-Star). Each sent frame and its face analysis are cached by seq; each received frame
-is paired with its input via the server's source_seq and refined in worker threads (CPU analysis, GPU render);
-playout uses the refined frame if it is ready by its playout time, else the raw JoyAI frame.
+cloud/lpfast/README.md): --facefix rel (cartoon refs like G-Star) | abs (human refs). LivePortrait (TensorRT, ~34 ms
+per frame on the RTX 5080 Laptop) re-renders the generated face so its mouth and eyes follow the real face; pose and
+identity stay JoyAI's. Each sent frame is analysed when it is sent (cached by seq); each received frame is paired
+with its input via the server's source_seq and rendered in a worker thread; playout uses the refined frame if it is
+ready by its playout time, else holds the previous refined frame, else the raw JoyAI frame.
 """
 
 import argparse
@@ -23,7 +23,6 @@ import asyncio
 import base64
 import collections
 import json
-import shlex
 import subprocess
 import sys
 import threading
@@ -57,13 +56,11 @@ p.add_argument("--max-buffer", type=int, default=20, help="drop oldest frames ab
 p.add_argument("--seconds", type=float, default=0, help="stop after N seconds (0 = run until Ctrl+C)")
 p.add_argument("--crf", type=int, default=20, help="uplink H.264 quality")
 p.add_argument("--extra", default="{}", help="extra JSON for the start message")
-p.add_argument("--facefix", default="off", choices=["off", "abs", "rel", "swap"],
-               help="face pass on the local GPU: abs = the real lips replace the generated (LivePortrait, human refs), "
-                    "rel = the real mouth motion is added to the generated mouth (LivePortrait, cartoon refs), swap = "
-                    "the real face swapped to the --ref identity and composited in (human refs)")
-p.add_argument("--facefix-size", type=int, default=128, choices=[128, 256], help="128: ~25 ms/frame on a 5080 "
-               "Laptop; 256: sharper but ~58 ms (too slow for 25 fps)")
-p.add_argument("--facefix-restore", default="none", choices=["none", "sharpen", "gfpgan", "codeformer"])
+p.add_argument("--facefix", default="off", choices=["off", "rel", "abs"],
+               help="LivePortrait face pass on the local GPU (cloud/lpfast, TensorRT): the generated face's mouth and "
+                    "eyes follow the real face. rel = keep the character's own mouth shape and add the speaker's "
+                    "motion (cartoon refs, e.g. G-Star); abs = copy the speaker's mouth shape (human refs)")
+p.add_argument("--facefix-gain", type=float, default=None, help="rel: mouth motion gain (default 2.0)")
 p.add_argument("--facefix-wait", type=float, default=15, help="ms the player waits for a late refined frame")
 p.add_argument("--facefix-hold", type=int, default=2, help="on a miss, repeat the last refined frame if it is at "
                "most this many frames old (instead of popping to the raw frame)")
@@ -222,68 +219,49 @@ class FileWriter:
 
 
 class FaceFixer:
-    """cloud/facefix FacePass behind three single-thread pools: input analysis (at capture), output analysis
-    (stateful, in order) and GPU render. Never blocks the event loop."""
+    """cloud/lpfast LivePortrait pass (TensorRT 11, laptop GPU) behind two single-thread pools: driver analysis
+    when a frame is sent (off the critical path) and the render when the JoyAI frame arrives (in order).
+    Never blocks the event loop. The playout jitter buffer hides the ~34 ms render."""
 
     def __init__(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "facefix"))
-        import facefix  # lazy: needs cloud/facefix/.venv (torch, mediapipe, LivePortrait)
-        fp = argparse.ArgumentParser()
-        facefix.add_args(fp)
-        method = ["--method", "swap", "--ref", args.ref] if args.facefix == "swap" else \
-            ["--lip-mode", args.facefix]
-        a = fp.parse_args([*method, "--lp-size", str(args.facefix_size), "--restore",
-                           args.facefix_restore, "--compile", *shlex.split(args.facefix_extra)])
-        self.fp = facefix.make_pass(a)
-        self.pool_in, self.pool_an, self.pool_gpu, self.pool_cmp = (ThreadPoolExecutor(1) for _ in range(4))
-        self.inputs = collections.OrderedDict()          # seq -> (frame, future of analyze_input)
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lpfast"))
+        import gc
+        from lp_pass import LPPass  # lazy: needs cloud/facefix/.venv (torch, TensorRT 11) + engines (lpfast/README)
+        self.pool_in, self.pool_gpu = ThreadPoolExecutor(1), ThreadPoolExecutor(1)
+        self.inputs = collections.OrderedDict()          # seq -> future of the driver analysis
         self.stats = collections.Counter()
         self.last_info = None
         self.ms = collections.deque(maxlen=250)
         t = time.time()
-        if hasattr(self.fp, "swap"):                     # warm up the swapper (cudnn autotune) in the GPU thread
-            S = self.fp.size
-            self.pool_gpu.submit(lambda: [self.fp.swap(np.random.randint(0, 255, (S, S, 3), np.uint8))
-                                          for _ in range(5)]).result()
-        elif self.fp.rt is not None:                     # warm up cudnn autotune + torch.compile in the GPU thread
-            rnd = lambda n: np.random.randint(0, 255, (n, n, 3), np.uint8)
-            lp = self.fp.rt.lp
-            self.pool_gpu.submit(lambda: [self.fp.rt(rnd(256), rnd(256), rnd(lp) if lp != 256 else None)
-                                          for _ in range(5)]).result()
-        print(f"[bridge] facefix {args.facefix} size {args.facefix_size} ready ({time.time() - t:.0f} s warm-up)",
-              flush=True)
+        gain = args.facefix_gain if args.facefix_gain is not None else (2.0 if args.facefix == "rel" else 1.0)
+        self.lp = self.pool_gpu.submit(lambda: LPPass(mode=args.facefix, gain=gain)).result()
+        self.drv = self.pool_in.submit(self.lp.driver).result()
+        gc.freeze()                                       # long-lived objects out of the GC: fewer pauses
+        print(f"[bridge] facefix {args.facefix} (LivePortrait TensorRT, gain {gain}) ready "
+              f"({time.time() - t:.0f} s warm-up)", flush=True)
 
     def add_input(self, seq, frame):
-        self.inputs[seq] = (frame, self.pool_in.submit(self.fp.analyze_input, frame))
+        self.inputs[seq] = self.pool_in.submit(self.drv.analyze, frame)
         while len(self.inputs) > 300:
             self.inputs.popitem(last=False)
 
     def submit(self, seq, out):
-        inp = self.inputs.get(seq)
-        if inp is None:
+        fd = self.inputs.get(seq)
+        if fd is None:
             self.stats["no_input"] += 1
             return None
         job = {"cancel": False}
-        fa = self.pool_an.submit(lambda: self.fp.analyze(inp[0], out, inp[1].result()))
 
         def render():
-            st = fa.result()
             if job["cancel"]:
                 self.stats["skipped_late"] += 1
                 return None
-            return self.fp.render_gpu(st), time.perf_counter()
-
-        fg = self.pool_gpu.submit(render)
-
-        def compose():                                   # CPU paste in its own thread: GPU starts the next frame
-            r = fg.result()
-            if r is None or job["cancel"]:
-                return None
-            res, info = self.fp.compose(r[0])
-            self.ms.append(1000 * (time.perf_counter() - r[0]["t1"]))
-            job["info"] = {k: info.get(k) for k in ("weight", "target", "src", "gates")}
+            t0 = time.perf_counter()
+            res, info = self.lp.render(out, fd.result())
+            self.ms.append(1000 * (time.perf_counter() - t0))
+            job["info"] = {k: info.get(k) for k in ("ok", "w")}
             return res
-        job["fut"] = self.pool_cmp.submit(compose)
+        job["fut"] = self.pool_gpu.submit(render)
         return job
 
     def take(self, job):

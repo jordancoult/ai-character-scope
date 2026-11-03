@@ -36,6 +36,7 @@ LIP_IDX = [6, 12, 14, 17, 19, 20]
 EYE_IDX = [11, 13, 15, 16, 18]
 IDX66 = None
 _UNSET = object()
+DET_STREAM = None
 DET_LOCK = threading.Lock()  # the RetinaFace wrapper (shared by driver + source) is not thread-safe; used rarely
 
 
@@ -60,7 +61,7 @@ def rot_matrix(pitch, yaw, roll):
 class Face:
     """Landmark tracking + LivePortrait motion (and optionally appearance) for one video stream."""
 
-    def __init__(self, detector, appearance=False, max_jump=0.35):
+    def __init__(self, detector, appearance=False, max_jump=0.35, retry=6):
         self.stream = torch.cuda.Stream()
         self.lm = Engine(ENG / "landmark.engine", self.stream)
         self.me = Engine(ENG / "motion_extractor.engine", self.stream)
@@ -68,14 +69,15 @@ class Face:
         self.det, self.max_jump = detector, max_jump
         self.lmk = None
         self.detections = 0
+        self.retry, self.lost = retry, 0  # while lost, re-detect only every `retry` frames (no per-frame stalls)
 
     def _detect(self, bgr):
         self.detections += 1
-        # the wrapper launches on the default stream: run it there, fenced on both sides (it is rare)
-        with DET_LOCK, torch.cuda.stream(torch.cuda.default_stream()):
-            torch.cuda.synchronize()
+        self.detected_now = True
+        # the wrapper launches on the stream it was built on (DET_STREAM): run it there; fence only that stream
+        with DET_LOCK, torch.cuda.stream(DET_STREAM):
             faces = self.det.predict(bgr)
-            torch.cuda.synchronize()
+            DET_STREAM.synchronize()
         if len(faces) == 0:
             return None
         return self._landmarks(bgr, faces[0])
@@ -90,7 +92,11 @@ class Face:
 
     def landmarks(self, bgr):
         """Track from the previous landmarks; re-detect only when lost or when the track jumps."""
+        self.detected_now = False
         if self.lmk is None:
+            self.lost += 1
+            if self.retry > 1 and self.lost % self.retry != 1:
+                return None
             lmk = self._detect(bgr)
             self.lmk = lmk if lmk is not None and np.isfinite(lmk).all() else None
             return self.lmk
@@ -103,6 +109,8 @@ class Face:
             if lmk is not None and not np.isfinite(lmk).all():
                 lmk = None
         self.lmk = lmk
+        if lmk is not None:
+            self.lost = 0
         return lmk
 
     def motion(self, bgr, lmk):
@@ -125,7 +133,7 @@ class Driver:
     """Webcam side: call `analyze(I)` when the frame is captured/sent; keep the result with the frame's seq."""
 
     def __init__(self, detector):
-        self.face = Face(detector)
+        self.face = Face(detector, retry=3)  # parallel thread: back off a little so it doesn't contend
 
     def analyze(self, bgr):
         with torch.cuda.stream(self.face.stream):  # own stream: overlaps with the render of the previous frame
@@ -139,10 +147,14 @@ class Driver:
 
 class LPPass:
     def __init__(self, mode="rel", regions=("lip", "eyes"), gain=1.0, eye_gain=1.0, base_ema=0.08,
-                 neutral_ema=0.01, fade=0.25, drv_smooth=0.0):
-        m = flp_compat.load_models()  # only RetinaFace (+106-pt) detection is used through the wrappers
+                 neutral_ema=0.01, fade=0.25, drv_smooth=0.0, yaw_gate=(30.0, 45.0), pitch_gate=(20.0, 35.0)):
+        global DET_STREAM
+        DET_STREAM = DET_STREAM or torch.cuda.Stream()
+        with torch.cuda.stream(DET_STREAM):  # the wrappers capture the current stream at construction
+            m = flp_compat.load_models()  # only RetinaFace (+106-pt) detection is used through the wrappers
         self.detector = m["face_analysis"]
-        self.src = Face(self.detector, appearance=True)
+        # lost generated face: re-detect every frame (a lost frame renders nothing, so a detection fits its budget)
+        self.src = Face(self.detector, appearance=True, retry=1)
         self.warp = Engine(ENG / "warping_fp16.engine", self.src.stream)
         self.stitch = Engine(ENG / "stitching.engine", self.src.stream)
         mt = cv2.imread(str(flp_compat.FLP / "assets" / "mask_template.png"), cv2.IMREAD_GRAYSCALE)
@@ -151,12 +163,43 @@ class LPPass:
         self.idx = [(LIP_IDX, gain)] if "lip" in regions else []
         self.idx += [(EYE_IDX, eye_gain)] if "eyes" in regions else []
         self.base_ema, self.neutral_ema, self.fade, self.drv_smooth = base_ema, neutral_ema, fade, drv_smooth
+        self.yaw_gate, self.pitch_gate = yaw_gate, pitch_gate
         self.base_out = self.neutral_in = self.exp_in = None
+        self.pose_s = None
         self.w = 0.0
         self.timing = {}
 
+        self._warmup()
+
+    def _warmup(self):
+        """Run every engine once (first executions cost 50-120 ms: lazy TensorRT/CUDA init)."""
+        with torch.cuda.stream(DET_STREAM):
+            for pred in (self.detector.face_det, self.detector.face_pose):
+                pred.predict({b["name"]: torch.zeros(b["shape"], device="cuda") for b in pred.inputs},
+                             torch.cuda.current_stream().cuda_stream)
+            # a real face: the first detection that finds one pays lazy imports / alignment init (~100 ms)
+            img = cv2.imread(str(flp_compat.FLP / "assets" / "examples" / "source" / "s0.jpg"))
+            if img is not None:
+                self.detector.predict(img)
+        for e in (self.src.lm, self.src.me, self.src.app, self.warp, self.stitch):
+            e.run(**{n: torch.zeros_like(e.buf[n]) for n in e.inputs})
+        torch.cuda.synchronize()
+        if img is not None:  # full render path once (first use of each CUDA kernel is slow), then reset the state
+            img = cv2.resize(img, (480, 640))
+            d = Driver(self.detector)
+            for _ in range(3):
+                self.render(img, d.analyze(img))
+            torch.cuda.synchronize()
+            self.src.lmk, self.src.lost, self.src.detections = None, 0, 0
+            self.base_out = self.neutral_in = self.exp_in = self.pose_s = None
+            self.w, self.timing = 0.0, {}
+
     def driver(self):
-        return Driver(self.detector)
+        d = Driver(self.detector)
+        for e in (d.face.lm, d.face.me):
+            e.run(**{n: torch.zeros_like(e.buf[n]) for n in e.inputs})
+        torch.cuda.synchronize()
+        return d
 
     def _t(self, key, t0, sync=True):
         if sync:
@@ -179,7 +222,19 @@ class LPPass:
         if s is _UNSET:
             s = self.analyze(out_bgr)
         ok = s is not None and drv is not None
-        self.w = min(1.0, self.w + self.fade) if ok else max(0.0, self.w - self.fade)
+        if self.src.detected_now:  # detection (~23 ms) already used this frame's budget: pass through, render next
+            info = {"ok": False, "w": self.w, "skipped": "detect"}
+            return out_bgr, info
+        target = 0.0
+        if ok:  # pose gate on the generated face: a frontal re-render warps profile views
+            yaw, pitch = abs(float(s["yaw"])), abs(float(s["pitch"]))
+            self.pose_s = (yaw, pitch) if self.pose_s is None else \
+                tuple(0.6 * p + 0.4 * v for p, v in zip(self.pose_s, (yaw, pitch)))  # no flicker at the threshold
+            yaw, pitch = self.pose_s
+            ramp = lambda v, g: min(1.0, max(0.0, (g[1] - v) / (g[1] - g[0])))  # noqa: E731
+            target = min(ramp(yaw, self.yaw_gate), ramp(pitch, self.pitch_gate))
+        self.w = min(target, self.w + self.fade) if target > self.w else max(target, self.w - self.fade)
+        ok = ok and self.w > 0
         info = {"ok": ok, "w": self.w}
         if not ok:  # no face on one side: pass JoyAI through
             return out_bgr, info

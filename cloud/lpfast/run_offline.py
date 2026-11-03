@@ -46,6 +46,40 @@ class Writer:
         self.p.wait()
 
 
+def motion_feats(frames, g=8, sz=64):
+    small = [cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), (sz, sz), interpolation=cv2.INTER_AREA).astype(np.float32)
+             for f in frames]
+    feats = [np.zeros(g * g, np.float32)]
+    for x, y in zip(small, small[1:]):
+        feats.append(np.abs(y - x).reshape(g, sz // g, g, sz // g).mean((1, 3)).ravel())
+    f = np.array(feats)
+    f -= f.mean(1, keepdims=True)
+    return f / (np.linalg.norm(f, axis=1, keepdims=True) + 1e-6)
+
+
+def align_dtw(in_frames, out_frames, max_step=60, max_start=90, jump_cost=0.01):
+    """(from cloud/facefix) input index per output frame: monotonic DTW over grid motion-energy features."""
+    cost = 1.0 - motion_feats(out_frames) @ motion_feats(in_frames).T
+    n_o, n_i = cost.shape
+    D = np.full((n_o, n_i), 1e9)
+    B = np.zeros((n_o, n_i), np.int32)
+    D[0, :max_start] = cost[0, :max_start]
+    for j in range(1, n_o):
+        best, arg = np.full(n_i, 1e9), np.zeros(n_i, np.int32)
+        for st in range(1, max_step + 1):
+            cand = np.full(n_i, 1e9)
+            cand[st:] = D[j - 1, :-st] + jump_cost * max(0, st - 2)
+            m = cand < best
+            best[m], arg[m] = cand[m], st
+        D[j], B[j] = best + cost[j], arg
+    i = int(np.argmin(D[-1]))
+    idx = [i]
+    for j in range(n_o - 1, 0, -1):
+        i -= B[j, i]
+        idx.append(i)
+    return np.array(idx[::-1])
+
+
 def label(img, text):
     img = img.copy()
     cv2.putText(img, text, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
@@ -57,7 +91,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", required=True)
     p.add_argument("--inp", required=True)
-    p.add_argument("--stats", required=True)
+    p.add_argument("--stats", default=None, help="joyai_client --stats JSON with source_seq (exact pairing); "
+                   "without it the pairing is estimated by DTW on motion")
     p.add_argument("--dst", required=True)
     p.add_argument("--mode", default="rel", choices=["rel", "abs"])
     p.add_argument("--regions", default="lip,eyes")
@@ -74,7 +109,12 @@ def main():
     dst.mkdir(parents=True, exist_ok=True)
     outs = read(a.out, a.max)
     ins = read(a.inp)
-    seq = json.load(open(a.stats))["source_seq"][:len(outs)]
+    seq = (json.load(open(a.stats)).get("source_seq") if a.stats else None) or None
+    if seq:
+        seq = seq[:len(outs)]
+    else:
+        seq = [int(i) + 1 for i in align_dtw(ins, outs)]
+        print("pairing: DTW")
     lp = LPPass(mode=a.mode, regions=tuple(a.regions.split(",")), gain=a.gain, eye_gain=a.eye_gain,
                 base_ema=a.base_ema, drv_smooth=a.drv_smooth)
     drv = lp.driver()
@@ -94,6 +134,8 @@ def main():
         t0 = time.perf_counter()
         r, info = lp.render(o, d, profile=a.profile)
         times.append((time.perf_counter() - t0) * 1000)
+        if times[-1] > 50 and k > 5:
+            print(f"slow frame {k}: {times[-1]:.0f} ms, det_out {lp.src.detections}, det_in {drv.face.detections}")
         oks += info["ok"]
         w_lp.write(r)
         w_rv.write(np.hstack([label(i, f"input {s}"), label(o, "JoyAI"), label(r, f"LP {a.mode} w={info['w']:.2f}")]))

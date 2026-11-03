@@ -1,3 +1,8 @@
+> **Superseded (2026-11-03) by `cloud/lpfast/`** (TensorRT LivePortrait at full 512 px, mouth + eyes; same
+> `--facefix rel|abs` bridge flag). The weights below (LivePortrait PyTorch, HyperSwap/InSwapper, GFPGAN/CodeFormer/
+> RestoreFormer, SAM2) were deleted to free disk; `setup.sh` re-downloads them. `swap` is no longer in the bridge.
+> The venv (`cloud/facefix/.venv`) is kept: lpfast runs in it.
+
 # facefix: lip sync (and optional face restoration) as a post-process on the laptop GPU
 
 **Round 2 summary (current recommendation):** human refs → `--facefix swap` (HyperSwap face swap of the real face,

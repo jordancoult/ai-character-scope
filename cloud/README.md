@@ -18,7 +18,8 @@ experiments/), keep it provider-independent, and add a row here.
 | `client/live_bridge.py` | **The live path**: camera (or a clip) → GPU machine over H.264 WebSocket → adaptive jitter-buffer playout → v4l2loopback (`/dev/video10`, OBS) or mp4 |
 | `client/joyai_client.py` | Benchmark client: simulated webcam, records output, reports fps + per-frame latency |
 | `client/sbs.sh` | input / output / reference review video + contact sheet |
-| `facefix/` | Laptop-GPU face post-process: LivePortrait lip sync from the real face onto the generated one (+ restoration tests), 38 fps at lp 128 on the 5080 Laptop; not in the live bridge yet |
+| `lpfast/` | **Laptop-GPU face pass (current)**: FasterLivePortrait on TensorRT 11 / RTX 5080 (sm_120), the generated face's mouth + eyes follow the real face; G-Star lip-gap 0.03 → 0.8, human ref 0.25 → 0.98; 34 ms/frame, 0 added latency; `live_bridge.py --facefix rel\|abs` |
+| `facefix/` | Superseded experiments (128 px LivePortrait, HyperSwap, restorers); its venv hosts lpfast, its model weights were removed 2026-11-03 |
 | `infra/pod.sh` | ssh/scp to the current GPU machine (address in `infra/.pod` as `HOST PORT`, gitignored) |
 | `infra/providers.md` | How to rent a machine on RunPod / Vast.ai / others; stock and price notes |
 | `infra/artifacts.md` | The private Hugging Face artifacts repo: contents, how to publish/refresh |

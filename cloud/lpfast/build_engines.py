@@ -6,6 +6,7 @@ rewrite the two custom `GridSample3D` nodes of warping_spade-fix.onnx into `Grid
 opset; numerically identical to torch.nn.functional.grid_sample (max abs err 5e-7 in a test).
 
   cloud/facefix/.venv/bin/python cloud/lpfast/build_engines.py [--fp32] [--only warping_spade ...]
+The warp is built in FP16 (warping_fp16.engine, the one lp_pass.py uses); the small models in FP32.
 Engines go to cloud/lpfast/checkpoints/trt/<name>.engine (GPU-specific; rebuild per GPU / TensorRT version).
 """
 
@@ -45,9 +46,27 @@ def patched_warping():
     return out
 
 
+FP32_OPS = ["GridSample", "InstanceNormalization", "Exp", "Softmax", "ReduceSum", "Pow", "Div"]
+
+
+def fp16_warping():
+    """TensorRT >= 11 has no FP16 builder flag (strongly typed): convert the ONNX itself, sensitive ops in FP32.
+    22.5 ms vs 64 ms FP32 on the RTX 5080 Laptop; max output diff 0.022 (mean 0.001, 0..1 scale)."""
+    out = DST / "warping_spade_fp16.onnx"
+    if not out.exists():
+        from onnxconverter_common import float16
+        src = patched_warping()
+        onnx.save(float16.convert_float_to_float16(onnx.load(src), keep_io_types=True, op_block_list=FP32_OPS), out)
+        src.unlink()
+    return out
+
+
 def build(name, fp16, workspace_gb=4):
-    onnx_path = patched_warping() if name == "warping_spade" else SRC / f"{name}.onnx"
-    eng_path = DST / f"{name}{'' if fp16 else '_fp32'}.engine"
+    if name == "warping_spade":
+        onnx_path, eng_path = (fp16_warping(), DST / "warping_fp16.engine") if fp16 else \
+            (patched_warping(), DST / "warping_spade_fp32.engine")
+    else:  # small models: FP32 (each 0.2-3 ms)
+        onnx_path, eng_path = SRC / f"{name}.onnx", DST / f"{name}.engine"
     log = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(log)
     net = builder.create_network(0)
@@ -56,8 +75,6 @@ def build(name, fp16, workspace_gb=4):
         raise RuntimeError(f"{name}: " + "; ".join(parser.get_error(i).desc() for i in range(parser.num_errors)))
     cfg = builder.create_builder_config()
     cfg.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_gb << 30)
-    if fp16 and hasattr(trt.BuilderFlag, "FP16"):
-        cfg.set_flag(trt.BuilderFlag.FP16)
     t0 = time.time()
     data = builder.build_serialized_network(net, cfg)
     if data is None:
@@ -69,7 +86,7 @@ def build(name, fp16, workspace_gb=4):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--fp32", action="store_true")
+    p.add_argument("--fp32", action="store_true", help="warp in FP32 (3x slower; for comparisons)")
     p.add_argument("--only", nargs="*")
     a = p.parse_args()
     DST.mkdir(parents=True, exist_ok=True)
