@@ -92,6 +92,13 @@ class Face:
         # the wrapper launches on the stream it was built on (DET_STREAM): run it there; fence only that stream
         with DET_LOCK, torch.cuda.stream(DET_STREAM):
             faces = self.det.predict(bgr)
+            if len(faces) == 0:  # cartoon faces (G-Star close-up) score lower: retry at a lower threshold
+                th = self.det.det_thresh
+                self.det.det_thresh = 0.3
+                try:
+                    faces = self.det.predict(bgr)
+                finally:
+                    self.det.det_thresh = th
             DET_STREAM.synchronize()
         if len(faces) == 0:
             return None
@@ -99,7 +106,7 @@ class Face:
 
     def _landmarks(self, bgr, pts):
         M, _ = _estimate_similar_transform_from_pts(pts, dsize=224, scale=1.5, vy_ratio=-0.1)
-        crop = cv2.warpAffine(bgr, M, (224, 224), flags=cv2.INTER_LINEAR)
+        crop = cv2.warpAffine(bgr, M, (224, 224), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
         x = torch.from_numpy(crop[..., ::-1].copy()).cuda().permute(2, 0, 1)[None].float().div_(255)
         out = self.lm.run(input=x)["856"].float().cpu().numpy().reshape(-1, 2) * 224  # 203 points in the crop
         Mi = np.linalg.inv(np.vstack([M, [0, 0, 1]]))
@@ -131,7 +138,7 @@ class Face:
     def motion(self, bgr, lmk):
         """256 px LivePortrait crop -> dict of GPU tensors (+ M_c2o of the equivalent 512 crop, for paste-back)."""
         M256, _ = _estimate_similar_transform_from_pts(lmk, dsize=256, scale=2.3, vy_ratio=-0.125)
-        crop = cv2.warpAffine(bgr, M256, (256, 256), flags=cv2.INTER_LINEAR)
+        crop = cv2.warpAffine(bgr, M256, (256, 256), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
         x = torch.from_numpy(crop[..., ::-1].copy()).cuda().permute(2, 0, 1)[None].float().div_(255)
         o = self.me.run(img=x)  # Engine.run orders itself after the caller's stream and back
         m = {"pitch": _deg(o["pitch"]), "yaw": _deg(o["yaw"]), "roll": _deg(o["roll"]),
@@ -156,13 +163,15 @@ class Driver:
             if lmk is None:
                 return None
             m = self.face.motion(bgr, lmk)
+            m["R"] = rot_matrix(m["pitch"], m["yaw"], m["roll"])
             self.face.stream.synchronize()
-        return {"exp": m["exp"], "lmk": lmk}
+        return {"exp": m["exp"], "lmk": lmk, "R": m["R"], "t": m["t"], "scale": m["scale"]}
 
 
 class LPPass:
     def __init__(self, mode="rel", gains=None, base_ema=0.08,
-                 neutral_ema=0.01, fade=0.25, drv_smooth=0.0, yaw_gate=(30.0, 45.0), pitch_gate=(20.0, 35.0)):
+                 neutral_ema=0.01, fade=0.25, drv_smooth=0.0, yaw_gate=(30.0, 45.0), pitch_gate=(20.0, 35.0),
+                 pose=False):
         global DET_STREAM
         DET_STREAM = DET_STREAM or torch.cuda.Stream()
         with torch.cuda.stream(DET_STREAM):  # the wrappers capture the current stream at construction
@@ -179,6 +188,9 @@ class LPPass:
         self.set_gain(**(gains or {}))
         self.base_ema, self.neutral_ema, self.fade, self.drv_smooth = base_ema, neutral_ema, fade, drv_smooth
         self.yaw_gate, self.pitch_gate = yaw_gate, pitch_gate
+        # pose=True (still-image sources): also transfer the driver's head rotation / shift / scale, relative to the
+        # driver's first frame (LivePortrait image animation). Off for JoyAI output, which already moves the head.
+        self.pose, self.drv0 = pose, None
         self.base_out = self.neutral_in = self.exp_in = None
         self.pose_s = None
         self.w = 0.0
@@ -224,7 +236,7 @@ class LPPass:
                 self.render(img, d.analyze(img))
             torch.cuda.synchronize()
             self.src.lmk, self.src.lost, self.src.detections = None, 0, 0
-            self.base_out = self.neutral_in = self.exp_in = self.pose_s = None
+            self.base_out = self.neutral_in = self.exp_in = self.pose_s = self.drv0 = None
             self.w, self.timing = 0.0, {}
 
     def driver(self):
@@ -288,8 +300,17 @@ class LPPass:
         sc, t, kp = s["scale"][..., None], s["t"], s["kp"]
         x_s = (kp @ R + s["exp"]) * sc
         x_s[..., :2] += t[:, None, :2]
-        x_d = (kp @ R + exp) * sc
-        x_d[..., :2] += t[:, None, :2]
+        if self.pose:
+            if self.drv0 is None:
+                self.drv0 = {k: drv[k].clone() for k in ("R", "t", "scale")}
+            R_d = drv["R"] @ self.drv0["R"].transpose(1, 2) @ R
+            sc_d = sc * (drv["scale"] / self.drv0["scale"])[..., None]
+            t_d = t + (drv["t"] - self.drv0["t"])
+            x_d = (kp @ R_d + exp) * sc_d
+            x_d[..., :2] += t_d[:, None, :2]
+        else:
+            x_d = (kp @ R + exp) * sc
+            x_d[..., :2] += t[:, None, :2]
         d = self.stitch.run(input=torch.cat([x_s.view(1, -1), x_d.view(1, -1)], 1))["output"].float()
         x_d = x_d + d[:, :63].view(1, 21, 3)
         x_d[..., :2] += d[:, 63:65].view(1, 1, 2)

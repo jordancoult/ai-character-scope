@@ -68,7 +68,10 @@ def label(img, text):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--source", default=str(DEFAULT_SRC))
+    p.add_argument("--source", default=str(DEFAULT_SRC), help="video (looped) or image (e.g. assets/char_front.png)")
+    p.add_argument("--crop", default=None, help="crop the source, fractions x0,y0,x1,y1 (e.g. 0,0,1,0.5 = upper half)")
+    p.add_argument("--pose", default=None, choices=["on", "off"], help="transfer head pose too (default: on for an "
+                   "image source, off for a video, whose head already moves)")
     p.add_argument("--camera", default="/dev/video0")
     p.add_argument("--driver", default=None, help="driver video instead of the webcam: 'auto' = the source's "
                    "in_<name>.mp4; paired with the source frame by frame (source_seq JSON if present, else DTW)")
@@ -80,16 +83,28 @@ def main():
     p.add_argument("--layout", type=int, default=3, choices=[1, 3], help="3 = webcam | raw | animated, 1 = animated")
     a = p.parse_args()
     from lp_pass import LPPass
-    cap = cv2.VideoCapture(a.source)
-    src = []
-    while True:
-        ok, f = cap.read()
-        if not ok:
-            break
-        src.append(f)
+    is_image = Path(a.source).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+    if is_image:
+        src = [cv2.imread(a.source, cv2.IMREAD_COLOR)]
+    else:
+        cap = cv2.VideoCapture(a.source)
+        src = []
+        while True:
+            ok, f = cap.read()
+            if not ok:
+                break
+            src.append(f)
+    if a.crop:
+        x0, y0, x1, y1 = (float(v) for v in a.crop.split(","))
+        h0, w0 = src[0].shape[:2]
+        src = [f[int(y0 * h0):int(y1 * h0), int(x0 * w0):int(x1 * w0)] for f in src]
+    src = [f[:f.shape[0] // 2 * 2, :f.shape[1] // 2 * 2] for f in src]  # even size for the video encoders
     H, W = src[0].shape[:2]
     gains = {k: float(v) for k, v in (x.split("=") for x in a.gains.split(",") if x)}
-    lp = LPPass(mode=a.mode, gains=gains)
+    pose = (a.pose == "on") if a.pose else is_image
+    lp = LPPass(mode=a.mode, gains=gains, pose=pose)
+    print(f"[live] source {Path(a.source).name} {W}x{H}{' (image)' if is_image else ''}, head pose transfer "
+          f"{'on' if pose else 'off'}", flush=True)
     drv = lp.driver()
     cam, dfr, pair = None, None, None
     if a.driver:
@@ -172,7 +187,7 @@ def main():
             t = time.perf_counter()
             r, info = lp.render(o, d)
             ms.append((time.perf_counter() - t) * 1000)
-            frame = np.hstack([label(c_now.copy(), "driver"), label(o.copy(), "JoyAI recording"),
+            frame = np.hstack([label(c_now.copy(), "driver"), label(o.copy(), "source"),
                                label(r.copy(), f"face pass {a.mode} w={info['w']:.2f}")]) if a.layout == 3 else r
             try:
                 outq.put_nowait(frame)
