@@ -56,6 +56,8 @@ p.add_argument("--max-buffer", type=int, default=20, help="drop oldest frames ab
 p.add_argument("--seconds", type=float, default=0, help="stop after N seconds (0 = run until Ctrl+C)")
 p.add_argument("--crf", type=int, default=20, help="uplink H.264 quality")
 p.add_argument("--extra", default="{}", help="extra JSON for the start message")
+p.add_argument("--facefix-preset", default=None, help="saved face-pass preset from cloud/lpfast/presets.json (e.g. gstar, "
+               "girl); implies --facefix <its mode>; --facefix-gains override it. Live: '/preset <name>'")
 p.add_argument("--facefix", default="off", choices=["off", "rel", "abs"],
                help="LivePortrait face pass on the local GPU (cloud/lpfast, TensorRT): the generated face's mouth and "
                     "eyes follow the real face. rel = keep the character's own mouth shape and add the speaker's "
@@ -72,6 +74,14 @@ p.add_argument("--review", default=None, help="also write input | JoyAI | played
 p.add_argument("--save-input", default=None, help="write the frames as sent (generation size) to this mp4 and "
                "<name>.json with source_seq per played frame (for client/mouth_sync.py)")
 args = p.parse_args()
+if args.facefix_preset:  # a preset implies its mode
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lpfast"))
+    import json as _json
+    _pre = _json.loads((Path(__file__).resolve().parents[1] / "lpfast" / "presets.json").read_text())
+    if args.facefix_preset not in _pre:
+        raise SystemExit(f"[bridge] no face preset {args.facefix_preset!r}; have {sorted(_pre)}")
+    if args.facefix == "off":
+        args.facefix = _pre[args.facefix_preset].get("mode", "rel")
 
 W, H = (480, 840) if args.portrait else (840, 480)
 
@@ -246,7 +256,9 @@ class FaceFixer:
         self.last_info = None
         self.ms = collections.deque(maxlen=250)
         t = time.time()
-        gains = parse_gains(args.facefix_gains)
+        from lp_pass import load_presets
+        pre = load_presets().get(args.facefix_preset, {}) if args.facefix_preset else {}
+        gains = dict(pre.get("gains", {})) | parse_gains(args.facefix_gains)
         self.lp = self.pool_gpu.submit(lambda: LPPass(mode=args.facefix, gains=gains)).result()
         self.drv = self.pool_in.submit(self.lp.driver).result()
         gc.freeze()                                       # long-lived objects out of the GC: fewer pauses
@@ -436,6 +448,15 @@ async def main():
                 if line in ("/q", "/quit"):
                     stop.set()
                     break
+                if line.startswith("/preset") and ff is not None:   # live face-pass preset switch
+                    parts = line.split()
+                    try:
+                        if len(parts) == 2:
+                            ff.lp.apply_preset(parts[1])
+                        print(f"[bridge] face preset mode {ff.lp.mode}, gains {ff.lp.gains}", flush=True)
+                    except ValueError as e:
+                        print(f"[bridge] {e}", flush=True)
+                    continue
                 if line.startswith("/gain"):                    # live face-pass gain: /gain [region|all] [value]
                     if ff is None:
                         print("[bridge] /gain needs --facefix rel|abs", flush=True)

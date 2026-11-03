@@ -45,9 +45,26 @@ REGIONS = {
 # defaults per mode (tested 2026-11-03, expr_sync.py): rel = the G-Star preset (his cartoon face maps LivePortrait's
 # brow keypoints the other way round: brow -1 -> brow corr +0.58, +1 -> -0.54; mouth 1.3 = the user's pick);
 # abs = human refs, LivePortrait's full expression set (lip/eye/brow corr 0.98/0.98/0.97).
+# Since 2026-11-03 the defaults are the user's live-tuned presets (presets.json): rel = "gstar", abs = "girl".
+PRESETS_FILE = Path(__file__).resolve().parent / "presets.json"
+
+
+def load_presets():
+    import json
+    return json.loads(PRESETS_FILE.read_text()) if PRESETS_FILE.exists() else {}
+
+
+def save_preset(name, mode, gains, pose=False, note=""):
+    import json
+    p = load_presets()
+    p[name] = {"mode": mode, "pose": bool(pose), "gains": dict(gains), "note": note}
+    PRESETS_FILE.write_text(json.dumps(p, indent=2) + "\n")
+
+
+_P = load_presets()
 DEFAULT_GAINS = {
-    "rel": {"lip": 1.3, "eye": 1.0, "brow": -1.0, "brow2": 0.0, "rest": 0.0},
-    "abs": {"lip": 1.0, "eye": 1.0, "brow": 1.0, "brow2": 1.0, "rest": 1.0},
+    "rel": dict(_P.get("gstar", {}).get("gains") or {"lip": 1.3, "eye": 1.0, "brow": -1.0, "brow2": 0.0, "rest": 0.0}),
+    "abs": dict(_P.get("girl", {}).get("gains") or {"lip": 1.0, "eye": 1.0, "brow": 1.0, "brow2": 1.0, "rest": 1.0}),
 }
 IDX66 = None
 _UNSET = object()
@@ -232,6 +249,17 @@ class LPPass:
         self.timing = {}
 
         self._warmup()
+
+    def apply_preset(self, name):
+        """Switch mode, gains and pose transfer to a saved preset (presets.json); safe while rendering."""
+        p = load_presets().get(name)
+        if p is None:
+            raise ValueError(f"no preset {name!r}; have {sorted(load_presets())}")
+        self.mode = p.get("mode", self.mode)
+        self.pose = bool(p.get("pose", self.pose))
+        self.drv0 = None
+        self.gains = dict(DEFAULT_GAINS[self.mode])
+        return self.set_gain(**p.get("gains", {}))
 
     def set_gain(self, **g):
         """Per-region motion gain (lip / eye / brow / brow2 / rest; `all` scales every region). 0 = JoyAI's own

@@ -1,0 +1,6 @@
+{
+  "gstar": {"mode": "rel", "pose": false, "gains": {"lip": 2.65, "eye": 2.5, "brow": 1.5, "brow2": 0.0, "rest": 0.0},
+            "note": "G-Star (assets/char_front.png), tuned live by the user 2026-11-03 (lip 2.5-3 also fine)"},
+  "girl": {"mode": "abs", "pose": false, "gains": {"lip": 2.0, "eye": 1.3, "brow": 1.3, "brow2": 1.0, "rest": 1.0},
+           "note": "human reference (blonde-gamer-girl), tuned live by the user 2026-11-03"}
+}

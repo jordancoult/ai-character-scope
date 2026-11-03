@@ -75,7 +75,9 @@ def main():
     p.add_argument("--camera", default="/dev/video0")
     p.add_argument("--driver", default=None, help="driver video instead of the webcam: 'auto' = the source's "
                    "in_<name>.mp4; paired with the source frame by frame (source_seq JSON if present, else DTW)")
-    p.add_argument("--mode", default="rel", choices=["rel", "abs"])
+    p.add_argument("--preset", default=None, help="saved preset from cloud/lpfast/presets.json (e.g. gstar, girl): "
+                   "sets mode, gains and pose; --mode/--gains/--pose given explicitly override it")
+    p.add_argument("--mode", default=None, choices=["rel", "abs"])
     p.add_argument("--gains", default="")
     p.add_argument("--smooth", type=float, default=0.0, help="driver expression smoothing 0..0.9 (higher = calmer, "
                    "laggier)")
@@ -106,8 +108,13 @@ def main():
         src = [f[int(y0 * h0):int(y1 * h0), int(x0 * w0):int(x1 * w0)] for f in src]
     src = [f[:f.shape[0] // 2 * 2, :f.shape[1] // 2 * 2] for f in src]  # even size for the video encoders
     H, W = src[0].shape[:2]
-    gains = {k: float(v) for k, v in (x.split("=") for x in a.gains.split(",") if x)}
-    pose = (a.pose == "on") if a.pose else is_image
+    from lp_pass import load_presets, save_preset
+    pre = load_presets().get(a.preset, {}) if a.preset else {}
+    if a.preset and not pre:
+        raise SystemExit(f"no preset {a.preset!r}; have {sorted(load_presets())}")
+    a.mode = a.mode or pre.get("mode", "rel")
+    gains = dict(pre.get("gains", {})) | {k: float(v) for k, v in (x.split("=") for x in a.gains.split(",") if x)}
+    pose = (a.pose == "on") if a.pose else bool(pre.get("pose", is_image))
     lp = LPPass(mode=a.mode, gains=gains, pose=pose, drv_smooth=a.smooth, neutral_ema=a.neutral_ema,
                 base_ema=a.base_ema)
     print(f"[live] source {Path(a.source).name} {W}x{H}{' (image)' if is_image else ''}, head pose transfer "
@@ -146,13 +153,32 @@ def main():
 
     def commands():
         print(f"[live] gains {lp.gains}. Type '/gain <lip|eye|brow|brow2|rest|all> <v>', '/gain', '/reset' "
-              "(re-take your neutral face) or 'q' + Enter",
+              "(re-take your neutral face), '/preset [name]', '/save <name>' or 'q' + Enter",
               flush=True)
         for line in sys.stdin:
             line = line.strip()
             if line in ("q", "/q", "quit"):
                 quit_.set()
                 return
+            if line.startswith("/preset"):
+                parts = line.split()
+                try:
+                    if len(parts) == 2:
+                        lp.apply_preset(parts[1])
+                    print(f"[live] presets {sorted(load_presets())}; now mode {lp.mode}, pose "
+                          f"{'on' if lp.pose else 'off'}, gains {lp.gains}", flush=True)
+                except ValueError as e:
+                    print(f"[live] {e}", flush=True)
+                continue
+            if line.startswith("/save"):
+                parts = line.split()
+                if len(parts) != 2:
+                    print("[live] usage: /save <name>", flush=True)
+                    continue
+                save_preset(parts[1], lp.mode, lp.gains, lp.pose, note=f"saved from live_test {time.strftime('%F %T')}")
+                print(f"[live] saved preset {parts[1]!r}: mode {lp.mode}, pose {'on' if lp.pose else 'off'}, "
+                      f"gains {lp.gains} -> {Path(__file__).resolve().parent / 'presets.json'}", flush=True)
+                continue
             if line in ("/reset", "/r"):  # take your current face / head position as the new neutral
                 lp.neutral_in = lp.drv0 = None
                 if drv is not None:
@@ -202,7 +228,7 @@ def main():
             r, info = lp.render(o, d)
             ms.append((time.perf_counter() - t) * 1000)
             frame = np.hstack([label(c_now.copy(), "driver"), label(o.copy(), "source"),
-                               label(r.copy(), f"face pass {a.mode} w={info['w']:.2f}")]) if a.layout == 3 else r
+                               label(r.copy(), f"face pass {lp.mode} w={info['w']:.2f}")]) if a.layout == 3 else r
             try:
                 outq.put_nowait(frame)
             except queue.Full:

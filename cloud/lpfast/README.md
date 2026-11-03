@@ -1,9 +1,42 @@
 # lpfast: real-time LivePortrait face pass on the laptop RTX 5080 (TensorRT 11, sm_120)
 
 Last stage of the JoyAI pipeline, on the local GPU: the generated character's face (G-Star or any person) is
-re-rendered so that its **mouth and eyes follow the real face**. Head pose, framing, identity and everything outside
-the face stay JoyAI's. It replaces the old `cloud/facefix` LivePortrait/HyperSwap pass (128 px, judged "not an
-improvement"); same bridge flag, `--facefix rel|abs`.
+re-rendered so that its **mouth, eyes and brows follow the real face**. Head pose, framing, identity and everything
+outside the face stay JoyAI's. It replaces the old `cloud/facefix` LivePortrait/HyperSwap pass (128 px, judged "not an
+improvement"); same bridge flag, `--facefix rel|abs`, plus `--facefix-preset gstar|girl`.
+It also animates a **still image** with the webcam (`live_test.py`, with head rotation/size transfer).
+
+## Quick start (tuning with the webcam)
+```bash
+cd ~/personal/ai-livestream
+# G-Star still image (upper half) driven by the webcam, your tuned preset; window = webcam | source | result
+cloud/facefix/.venv/bin/python cloud/lpfast/live_test.py --source assets/char_front.png --crop 0,0,1,0.5 --preset gstar
+# the same on a recorded JoyAI output, driven by the webcam (or --driver auto = the recording's own input)
+cloud/facefix/.venv/bin/python cloud/lpfast/live_test.py --preset gstar
+```
+Type in the terminal + Enter while it runs:
+
+| Command | Effect |
+|---|---|
+| `/gain lip 2.5` | region gain: `lip`, `eye`, `brow`, `brow2`, `rest`, or `all` (scales every region) |
+| `/gain` | show the current gains |
+| `/preset girl` / `/preset` | switch to a saved preset (mode, gains, pose) / list presets |
+| `/save NAME` | save the current mode + gains + pose as preset NAME (`presets.json`; commit it to keep it) |
+| `/reset` | re-take your neutral face and head reference (after moving / changing seat) |
+| `q` | quit |
+
+`live_test.py` flags: `--preset`, `--gains lip=..,eye=..` (on top of the preset), `--mode rel|abs`, `--pose on|off`
+(head rotation + size from the driver; default on for an image source, off for a video), `--smooth 0..0.9` (calmer,
+laggier driver), `--neutral-ema` (how fast your neutral face re-adapts, 0.01 ≈ 4 s, 0 = first frame),
+`--crop x0,y0,x1,y1` (fractions), `--layout 1|3`, `--save out.mp4`, `--driver auto|VIDEO`, `--camera /dev/video0`.
+
+### Presets (`presets.json`, tuned live by the user 2026-11-03; also the defaults of each mode)
+| Preset | Mode | Pose | lip | eye | brow | brow2 | rest |
+|---|---|---|---|---|---|---|---|
+| `gstar` | rel | off | 2.65 (2.5–3 fine) | 2.5 | 1.5 | 0 | 0 |
+| `girl` (human ref) | abs | off | 2.0 | 1.3 | 1.3 | 1 | 1 |
+
+Bridge: `--facefix-preset gstar` (implies `--facefix rel`); live `/preset NAME`, `/gain ...` there too.
 
 ## Results (recorded 5090 runs replayed with exact `source_seq` pairing)
 Correlation of the output with the driver (MediaPipe; `expr_sync.py`: lip gap, eyelid opening, brow height):
@@ -17,16 +50,19 @@ Correlation of the output with the driver (MediaPipe; `expr_sync.py`: lip gap, e
 
 - Human `gestures/glasses` clip (DTW-paired): hands at the face edge stay intact; the effect fades on large tilts.
 - G-Star boxer clip (profile, fast motion): JoyAI draws no face most of the time; lpfast passes those frames through.
-- **G-Star's brows are mirrored**: on his cartoon face LivePortrait's brow keypoints act the other way round
-  (brow gain +1: −0.54, −1: +0.58; a human ref in rel mode is +0.94 with +1). His brows sit under the cap brim,
-  so the motion is small either way.
+- G-Star's brows on the JoyAI recording measured mirrored (brow gain +1: −0.54, −1: +0.58), but on the still image
+  with the user's own face +1.5 looked right to the user (the `gstar` preset); trust the eye test. His brows sit
+  under the cap brim, so the motion is small either way.
+- The numbers above are from the earlier defaults (lip 1.3, eye 1, brow −1); the user later preferred much more
+  motion (`gstar` preset).
 
 ### Gains (per region, live-tunable)
 Regions = groups of LivePortrait's 21 implicit expression keypoints: `lip` (6, 12, 14, 17, 19, 20), `eye` (11, 13,
 15, 16, 18), `brow` (1, 2), `brow2` (9 y/z), `rest` (3/4 y, 5/8 z: cheeks/jaw; with brow2 = LivePortrait's full
 expression set). 1 = the speaker's motion as is, 0.5 = half, 0 = JoyAI's own expression, negative = mirrored.
-Bridge: `--facefix-gains 'lip=1.3,eye=1,brow=-1'`; while running type `/gain lip 1.5`, `/gain all 0.8`, `/gain`
-(show) + Enter (applied from the next frame, no restart).
+Bridge: `--facefix-gains 'lip=2.65,eye=2.5,brow=1.5'`; while running type `/gain lip 1.5`, `/gain all 0.8`, `/gain`
+(show) + Enter (applied from the next frame, no restart). In `abs` mode a gain blends towards (>1: beyond) the
+driver's expression.
 
 Review media (gitignored, regenerate with `run_offline.py`): `experiments/2026-11-03-first/*/review.mp4`
 (input | JoyAI | lpfast).
@@ -62,6 +98,15 @@ overlapping the three stages (GPU already saturated: 29 fps vs 31 serial).
     character's resting mouth, without JoyAI's chunk wobble, and the speaker's neutral face);
   - `abs` (human refs): the driver's lip/eye expression as is;
   then stitching, warp (512 px), paste with LivePortrait's soft face mask into the face ROI on the GPU.
+- **Driver crop is jaw/brow-independent** (`Face._stable_crop`): LivePortrait sizes the crop on the landmark box,
+  which includes chin and brows, so opening the mouth or raising the brows grew the box, the face looked smaller and
+  the animated face shrank. The driver crop is now kept relative to the eyes (first frame's crop, scaled by the
+  inter-ocular distance, rotated with the eye line); with pose transfer, head size follows the inter-ocular distance
+  (LivePortrait's scale estimate moved with the jaw: corr −0.23). Head translation isn't transferred (stitching
+  cancels it).
+- **Still images**: `pose=True` adds the driver's head rotation (relative to its first frame) and size. Cartoon faces
+  score low in RetinaFace at close framing, so detection retries at threshold 0.3; crops replicate the border (no
+  black band where the crop leaves the image).
 - **Gates**: no face on either side → JoyAI passes through; the effect fades (0.25 per frame) over 30–45° yaw /
   20–35° pitch of the generated face (smoothed), where a frontal re-render would warp profiles.
 
@@ -74,19 +119,19 @@ git clone --depth 1 https://github.com/warmshao/FasterLivePortrait.git cloud/lpf
 cloud/facefix/.venv/bin/python -c "from huggingface_hub import snapshot_download as s; s('warmshao/FasterLivePortrait', \
     local_dir='cloud/lpfast/checkpoints', allow_patterns=['liveportrait_onnx/*.onnx'], ignore_patterns=['*warping_spade.onnx'])"
 cloud/facefix/.venv/bin/python cloud/lpfast/build_engines.py    # all engines -> cloud/lpfast/checkpoints/trt
-# live (G-Star): add --facefix rel to the usual bridge command, run with the facefix venv
+# live (G-Star): add --facefix-preset gstar to the usual bridge command, run with the facefix venv
 cloud/facefix/.venv/bin/python cloud/client/live_bridge.py --url ws://127.0.0.1:18080/ws --input /dev/video0 \
     --output ffplay --portrait --out-size 720x1260 --ref assets/char_front.png \
-    --prompt "$(cat cloud/pipelines/joyai/prompts/gstar.txt)" --facefix rel        # human refs: --facefix abs
+    --prompt "$(cat cloud/pipelines/joyai/prompts/gstar.txt)" --facefix-preset gstar   # human refs: girl
 # offline replay of a recorded run (input as sent + JoyAI output [+ stats JSON with source_seq, else DTW])
 cloud/facefix/.venv/bin/python cloud/lpfast/run_offline.py --out OUT.mp4 --inp IN.mp4 --stats OUT.json \
-    --dst cloud/lpfast/experiments/NAME --mode rel [--gains lip=1.3,eye=1,brow=-1]
+    --dst cloud/lpfast/experiments/NAME --mode rel [--gains lip=2.65,eye=2.5,brow=1.5]
 cloud/facefix/.venv/bin/python cloud/lpfast/expr_sync.py --input IN.mp4 --output cloud/lpfast/experiments/NAME/lp.mp4 --stats OUT.json
 ```
 Disk: TensorRT 11 libs ~6.3 GB in the venv, ONNX ~0.7 GB, engines ~0.6 GB.
 
 ## Open / next
-- G-Star's eyes follow at 0.59 (his lids are drawn half-shut); the eye gain is untuned beyond 1.
+- Still image + large head turns: a pale smear at the cone's edge (disocclusion), a LivePortrait limit.
 - A hand directly over the mouth isn't in any recording (hands at the face edge are fine); no hand gate yet.
 - Not yet run against the real 5090 server (validated through the bridge with `cloud/facefix/mock_server.py`
   replaying a recorded 5090 run at its chunk rhythm).
