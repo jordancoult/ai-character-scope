@@ -8,7 +8,7 @@ driver → Kling-motion-control G-Star clips. Background and the rejected altern
 |---|---|
 | Dataset (private) | HF `JordanCo/gstar-lipsync-pairs` (81 clips, 14 pairs; README there). Built by `data/build_pairs.py` + `data/face_align.py --raw` |
 | Trainer | `train_lora.py` (+ `setup_train.sh` for the GPU box) |
-| Merge to a servable `.pth` | `merge_lora.py` |
+| Merge to a servable `.pth` | `merge_lora.py` (**loses most of the LoRA in bf16, all of it in FP8**: prefer a runtime LoRA, see `cloud/docs/gstar-lora-finetune.md`) |
 | Eval | `eval_infer.py` (GPU box) + `mouth_sync_eval.py` (laptop) |
 | Results | **`FINDINGS.md`: first attempt gave no lip-sync gain** (expression only; longer training breaks the face texture); adapters + eval media in HF `JordanCo/joyai-gstar-lora` (private) |
 

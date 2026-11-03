@@ -2,8 +2,14 @@
 
 **Result: no lip-sync gain.** The best clean adapters (r2 step 25, r3 step 50) change G-Star's *expression*: the
 eyes open and follow the driver, and the smile gets livelier. But the mouth still doesn't open and close with the
-driver's speech (mouth-sync correlation unchanged, within noise). Longer training breaks the face texture. Not
-recommended for live use; the server default stays `1101_face++`.
+driver's speech (mouth-sync correlation unchanged, within noise). Longer training breaks the face texture. **Owner's verdict
+from the eval videos:** mouth not much better, but **character detail, skin quality and the hat clearly improved** at
+25 and 50 steps (best), with possibly some added blur in fast movement. Server default stays `1101_face++`; how to
+try the adapters live (runtime LoRA, not a merge): `cloud/docs/gstar-lora-finetune.md`.
+
+**Merging loses the effect:** the LoRA delta is ~3e-4 of the weight RMS. Merged into bf16 only ~30% of it survives
+(cosine 0.3 to the intended change, ~3× noise); after the 5090's FP8 weight quantization it is noise (cosine 0.07).
+Apply it at runtime instead.
 
 Artifacts (private HF): dataset `JordanCo/gstar-lipsync-pairs`; adapters, logs, previews and eval videos
 `JordanCo/joyai-gstar-lora` (`adapters/r2_step25.pt`, `adapters/r3_step50.pt`, `adapters/r3_step100.pt`,
