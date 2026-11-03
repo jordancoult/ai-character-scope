@@ -155,6 +155,8 @@ def main():
                 return
             if line in ("/reset", "/r"):  # take your current face / head position as the new neutral
                 lp.neutral_in = lp.drv0 = None
+                if drv is not None:
+                    drv.reset()
                 print("[live] neutral face + head position reset to the next frame", flush=True)
                 continue
             if line.startswith("/gain"):

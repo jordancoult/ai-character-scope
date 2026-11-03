@@ -85,6 +85,7 @@ class Face:
         self.lmk = None
         self.detections = 0
         self.retry, self.lost = retry, 0  # while lost, re-detect only every `retry` frames (no per-frame stalls)
+        self.stable_crop, self.crop_ref = False, None
 
     def _detect(self, bgr):
         self.detections += 1
@@ -135,9 +136,35 @@ class Face:
             self.lost = 0
         return lmk
 
+    def _stable_crop(self, lmk, M):
+        """Jaw-independent crop: LivePortrait sizes/centres the crop on the landmark box, which includes the chin, so
+        an open mouth grows the box (face looks smaller -> scale drops, the animated face shrinks). Keep the first
+        frame's crop relative to the eyes instead: size ~ inter-ocular distance, centre/angle tied to the eye line."""
+        el, er = lmk[[0, 12]].mean(0), lmk[[24, 36]].mean(0)
+        ce, d = (el + er) / 2, er - el
+        iod, ang = float(np.hypot(*d)) + 1e-6, float(np.arctan2(d[1], d[0]))
+        if self.crop_ref is None:
+            sc = float(np.hypot(M[0, 0], M[0, 1]))
+            th = float(np.arctan2(M[0, 1], M[0, 0]))
+            center = np.linalg.solve(M[:, :2], np.array([128.0, 128.0]) - M[:, 2])
+            c, s_ = np.cos(-ang), np.sin(-ang)
+            rel = np.array([[c, -s_], [s_, c]]) @ (center - ce) / iod
+            self.crop_ref = {"rel": rel, "size": (256.0 / sc) / iod, "dth": th - ang}
+            return M
+        r = self.crop_ref
+        c, s_ = np.cos(ang), np.sin(ang)
+        center = ce + (np.array([[c, -s_], [s_, c]]) @ r["rel"]) * iod
+        sc = 256.0 / (r["size"] * iod)
+        th = ang + r["dth"]  # crop angle follows the eye line (checked: d(crop angle) = d(eye angle))
+        ct, st = np.cos(th), np.sin(th)
+        return np.array([[sc * ct, sc * st, 128 - sc * (ct * center[0] + st * center[1])],
+                         [-sc * st, sc * ct, 128 - sc * (-st * center[0] + ct * center[1])]], np.float32)
+
     def motion(self, bgr, lmk):
         """256 px LivePortrait crop -> dict of GPU tensors (+ M_c2o of the equivalent 512 crop, for paste-back)."""
         M256, _ = _estimate_similar_transform_from_pts(lmk, dsize=256, scale=2.3, vy_ratio=-0.125)
+        if self.stable_crop:
+            M256 = self._stable_crop(lmk, M256)
         crop = cv2.warpAffine(bgr, M256, (256, 256), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
         x = torch.from_numpy(crop[..., ::-1].copy()).cuda().permute(2, 0, 1)[None].float().div_(255)
         o = self.me.run(img=x)  # Engine.run orders itself after the caller's stream and back
@@ -156,6 +183,11 @@ class Driver:
 
     def __init__(self, detector):
         self.face = Face(detector, retry=3)  # parallel thread: back off a little so it doesn't contend
+        self.face.stable_crop = True  # the driver's mouth must not change its crop (scale / position)
+
+    def reset(self):
+        """Re-take the crop reference (call with LPPass neutral reset, or when a new person is in front)."""
+        self.face.crop_ref = None
 
     def analyze(self, bgr):
         with torch.cuda.stream(self.face.stream):  # own stream: overlaps with the render of the previous frame
@@ -165,7 +197,10 @@ class Driver:
             m = self.face.motion(bgr, lmk)
             m["R"] = rot_matrix(m["pitch"], m["yaw"], m["roll"])
             self.face.stream.synchronize()
-        return {"exp": m["exp"], "lmk": lmk, "R": m["R"], "t": m["t"], "scale": m["scale"]}
+        el, er = lmk[[0, 12]].mean(0), lmk[[24, 36]].mean(0)
+        # head size from the inter-ocular distance (expression-independent; LivePortrait's own scale estimate moves
+        # with the jaw and brows, which shrank the animated face when the mouth opened / brows went up)
+        return {"exp": m["exp"], "lmk": lmk, "R": m["R"], "iod": float(np.hypot(*(er - el)))}
 
 
 class LPPass:
@@ -302,10 +337,11 @@ class LPPass:
         x_s[..., :2] += t[:, None, :2]
         if self.pose:
             if self.drv0 is None:
-                self.drv0 = {k: drv[k].clone() for k in ("R", "t", "scale")}
-            R_d = drv["R"] @ self.drv0["R"].transpose(1, 2) @ R
-            sc_d = sc * (drv["scale"] / self.drv0["scale"])[..., None]
-            t_d = t + (drv["t"] - self.drv0["t"])
+                self.drv0 = {"R": drv["R"].clone(), "iod": drv["iod"]}
+            d0 = self.drv0
+            R_d = drv["R"] @ d0["R"].transpose(1, 2) @ R
+            sc_d = sc * min(1.5, max(0.67, drv["iod"] / d0["iod"]))
+            t_d = t  # head translation isn't transferred (stitching cancels it; the character stays in place)
             x_d = (kp @ R_d + exp) * sc_d
             x_d[..., :2] += t_d[:, None, :2]
         else:
