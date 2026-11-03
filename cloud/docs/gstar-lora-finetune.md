@@ -121,13 +121,17 @@ Lip-gap correlation with the driver (1 = perfect; noise ≈ ±0.15):
    - **(c) DMD-style distribution matching** with a teacher fine-tuned on the pairs (the upstream Stage-2 machinery;
      needs a teacher, which isn't public: see PLAN §2a).
    - **(d) Closer framing** at train and test time: the mouth must span more 24-px latent cells.
-3. **A general expression/mouth LoRA** (any character) only makes sense after 2(b) or 2(d) shows a mouth gain on
+3. **More G-Star data is available:** the owner can supply at least 2× the current pairs. Add them as rows to
+   `training/data/gstar_pairs.csv` and re-run `build_pairs.py` → `face_align.py`. Prefer pairs with fast moves (to
+   fight the motion blur) and close-up talking faces (for the mouth). More data should let the detail LoRA train
+   longer before the texture breaks; for the mouth it helps only together with 2(b)/2(d).
+4. **A general expression/mouth LoRA** (any character) only makes sense after 2(b) or 2(d) shows a mouth gain on
    G-Star. Data then: 20–40 min of pairs, 30+ characters, 50+ drivers who talk (not only music).
-4. **Data hygiene that mattered:**
+5. **Data hygiene that mattered:**
    - align by audio, then check the lip-gap lag (fixed ±1–2 frames on 6 of 14 pairs);
    - look at contact sheets: Kling re-frames;
    - keep a held-out driver.
-5. **Ops lessons:**
+6. **Ops lessons:**
    - never leave a rented GPU idle waiting for an answer (this cost ~$30);
    - check uptime with `vastai show instances`;
    - pre-stage all eval inputs before training ends, so the box can be destroyed right after;
