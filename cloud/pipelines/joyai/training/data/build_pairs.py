@@ -35,7 +35,7 @@ DEFAULT_CAPTION_FILE = REPO / "cloud" / "pipelines" / "joyai" / "prompts" / "gst
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("csv", help="CSV with columns pair_id,input_url,output_url[,notes][,driver]")
+    p.add_argument("csv", help="CSV with columns pair_id,input_url,output_url[,notes][,driver][,flip][,skip_output_s]")
     p.add_argument("--raw", default=str(HERE / "raw"), help="download cache")
     p.add_argument("--out", default=str(HERE / "processed"), help="output root")
     p.add_argument("--only", nargs="*", help="process only these pair_ids")
@@ -95,16 +95,23 @@ def read_csv(path):
             log.warning("duplicate pair_id %s, skipped", pid)
             continue
         seen.add(pid)
+        flip = r.get("flip", "").lower() in ("1", "y", "yes", "true", "flip", "flipped", "hflip")
+        try:
+            skip = float(r.get("skip_output_s") or 0)
+        except ValueError:
+            log.warning("row %d (%s): bad skip_output_s %r, using 0", i + 1, pid, r.get("skip_output_s"))
+            skip = 0.0
         rows.append({"pair_id": pid, "input_url": r["input_url"], "output_url": r["output_url"],
-                     "notes": r.get("notes", ""), "driver": r.get("driver", "")})
+                     "notes": r.get("notes", ""), "driver": r.get("driver", ""), "flip": flip,
+                     "skip_output_s": skip})
     return rows
 
 
 # ---------------------------------------------------------------- normalization
 
-def vf_chain(a, extra_crop=None):
+def vf_chain(a, extra_crop=None, hflip=False):
     W, H = a.width, a.height
-    f = [f"fps={a.fps}"]
+    f = [f"fps={a.fps}"] + (["hflip"] if hflip else [])  # hflip: input was mirrored before the output was made
     if a.crop == "cover":
         f += [f"scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos", f"crop={W}:{H}"]
     else:
@@ -117,11 +124,11 @@ def vf_chain(a, extra_crop=None):
     return ",".join(f)
 
 
-def normalize(src, dst, start, nframes, a, extra_crop=None):
+def normalize(src, dst, start, nframes, a, extra_crop=None, hflip=False):
     """Trim [start, start + nframes/fps) to exactly nframes CFR frames at WxH; keep audio (AAC) if present."""
     dur = nframes / a.fps
     cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.4f}", "-i", src, "-t", f"{dur + 0.5:.4f}",
-           "-vf", vf_chain(a, extra_crop), "-frames:v", str(nframes),
+           "-vf", vf_chain(a, extra_crop, hflip), "-frames:v", str(nframes),
            "-c:v", "libx264", "-preset", "medium", "-crf", str(a.crf), "-g", str(int(a.fps)),
            "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100", "-af", f"atrim=0:{dur:.4f}",
            "-movflags", "+faststart", dst]
@@ -159,7 +166,7 @@ def black_span(frames, fps, thresh=18, flat=4):
 
 # ---------------------------------------------------------------- stages
 
-def stage_align(pdir, fin, fout, pin, pout, a):
+def stage_align(pdir, fin, fout, pin, pout, a, flip=False, skip_output_s=0.0):
     """Find offset, overlap, normalize both videos. Returns the 'align' dict."""
     res = {"probe_in": pin, "probe_out": pout}
     aud = None
@@ -178,7 +185,7 @@ def stage_align(pdir, fin, fout, pin, pout, a):
     # drop leading/trailing black (or blank) frames of either video from the span
     bi, bo = black_span(lf_in, a.fps), black_span(lf_out, a.fps)
     off = best["offset_s"]
-    s0 = max(out0, bo[0], bi[0] - off)
+    s0 = max(out0, bo[0], bi[0] - off, skip_output_s)  # skip_output_s: user-marked bad start of the output
     s1 = min(out0 + dur, pout["duration"] - bo[1], pin["duration"] - bi[1] - off)
     res["black_trim"] = {"input": bi, "output": bo}
     in0, out0, dur = s0 + off, s0, max(0.0, s1 - s0)
@@ -192,7 +199,8 @@ def stage_align(pdir, fin, fout, pin, pout, a):
     if nframes < 2:
         return res
     norm_in, norm_out = pdir / "norm_input.mp4", pdir / "norm_output.mp4"
-    n_in = normalize(fin, norm_in, in0, nframes, a)
+    n_in = normalize(fin, norm_in, in0, nframes, a, hflip=flip)
+    res["flip_input"], res["skip_output_s"] = bool(flip), float(skip_output_s)
     n_out = normalize(fout, norm_out, out0, nframes, a)
     res["frames"] = min(n_in, n_out)
     res["overlap_s"] = round(res["frames"] / a.fps, 3)
@@ -237,7 +245,8 @@ def maybe_match_framing(pdir, fin, a, al, fr):
     x0 = float(np.clip(cx_i - cx_o / s, 0, 1 - 1 / s))
     y0 = float(np.clip(cy_i - cy_o / s, 0, 1 - 1 / s))
     crop = (round(s, 4), round(x0, 4), round(y0, 4))
-    normalize(fin, pdir / "norm_input.mp4", al["in_start"], al["frames"], a, extra_crop=crop)
+    normalize(fin, pdir / "norm_input.mp4", al["in_start"], al["frames"], a, extra_crop=crop,
+              hflip=al.get("flip_input", False))
     log.info("%s: matched framing, input cropped by %s", pdir.name, crop)
     return crop
 
@@ -345,11 +354,13 @@ def process_pair(row, a, vis_holder, caption):
                              "output": {k: mout.get(k) for k in ("method", "zyla_field", "fetched_at")}}
 
         akey = sha(json.dumps([min_.get("source"), min_.get("fetched_at"), mout.get("source"), mout.get("fetched_at"),
-                               a.width, a.height, a.fps, a.crop, a.crf, a.match_framing, 4]))
+                               a.width, a.height, a.fps, a.crop, a.crf, a.match_framing, 4,
+                               row.get("flip", False), row.get("skip_output_s", 0.0)]))
         norm_ok = (pdir / "norm_input.mp4").exists() and (pdir / "norm_output.mp4").exists()
         if analysis.get("align_key") != akey or not norm_ok or "align" in a.force:
             log.info("[%s] aligning", pid)
-            analysis["align"] = stage_align(pdir, fin, fout, min_["probe"], mout["probe"], a)
+            analysis["align"] = stage_align(pdir, fin, fout, min_["probe"], mout["probe"], a,
+                                            flip=row.get("flip", False), skip_output_s=row.get("skip_output_s", 0.0))
             analysis["align_key"] = akey
             analysis.pop("vision_key", None)
             write_json(apath, analysis)
