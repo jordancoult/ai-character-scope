@@ -77,6 +77,12 @@ def main():
                    "in_<name>.mp4; paired with the source frame by frame (source_seq JSON if present, else DTW)")
     p.add_argument("--mode", default="rel", choices=["rel", "abs"])
     p.add_argument("--gains", default="")
+    p.add_argument("--smooth", type=float, default=0.0, help="driver expression smoothing 0..0.9 (higher = calmer, "
+                   "laggier)")
+    p.add_argument("--neutral-ema", type=float, default=0.01, help="rel: how fast your 'neutral face' baseline adapts "
+                   "per frame (0.01 = ~4 s; 0 = keep the first frame)")
+    p.add_argument("--base-ema", type=float, default=0.08, help="rel: how fast the character's resting expression "
+                   "follows the source (still image: irrelevant)")
     p.add_argument("--fps", type=float, default=25)
     p.add_argument("--seconds", type=float, default=0)
     p.add_argument("--save", default=None, help="also write the window content to this mp4")
@@ -102,7 +108,8 @@ def main():
     H, W = src[0].shape[:2]
     gains = {k: float(v) for k, v in (x.split("=") for x in a.gains.split(",") if x)}
     pose = (a.pose == "on") if a.pose else is_image
-    lp = LPPass(mode=a.mode, gains=gains, pose=pose)
+    lp = LPPass(mode=a.mode, gains=gains, pose=pose, drv_smooth=a.smooth, neutral_ema=a.neutral_ema,
+                base_ema=a.base_ema)
     print(f"[live] source {Path(a.source).name} {W}x{H}{' (image)' if is_image else ''}, head pose transfer "
           f"{'on' if pose else 'off'}", flush=True)
     drv = lp.driver()
@@ -138,13 +145,18 @@ def main():
     quit_ = threading.Event()
 
     def commands():
-        print(f"[live] gains {lp.gains}. Type '/gain <lip|eye|brow|brow2|rest|all> <v>', '/gain' or 'q' + Enter",
+        print(f"[live] gains {lp.gains}. Type '/gain <lip|eye|brow|brow2|rest|all> <v>', '/gain', '/reset' "
+              "(re-take your neutral face) or 'q' + Enter",
               flush=True)
         for line in sys.stdin:
             line = line.strip()
             if line in ("q", "/q", "quit"):
                 quit_.set()
                 return
+            if line in ("/reset", "/r"):  # take your current face / head position as the new neutral
+                lp.neutral_in = lp.drv0 = None
+                print("[live] neutral face + head position reset to the next frame", flush=True)
+                continue
             if line.startswith("/gain"):
                 parts = line.split()
                 try:
