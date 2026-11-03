@@ -70,6 +70,8 @@ def parse_args(argv=None):
     p.add_argument("--w-mouth", type=float, default=4.0)
     p.add_argument("--w-anchor", type=float, default=0.0, help="weight of (gen - base)^2 outside the face mask "
                    "(0 = off, and the base rollout is skipped)")
+    p.add_argument("--w-anchor-face", type=float, default=0.0, help="weight of (gen - base)^2 INSIDE the face mask "
+                   "(keeps the face texture on the base model's manifold while the target term pulls the motion)")
     p.add_argument("--w-frame", type=float, default=1.0, help="weight of the full-frame loss vs the Kling target")
     p.add_argument("--p-exit-last", type=float, default=0.7, help="probability that a chunk exits at the last step")
     p.add_argument("--grad-window", type=int, default=1, help="chunks per segmented backward")
@@ -308,7 +310,8 @@ def chunk_loss(gen, k0, item, base, a, device):
     cells = e_t.numel()
     l_face = (e_t * a.w_face * face * valid).sum() / cells
     l_mouth = (e_t * a.w_mouth * mouth * valid).sum() / cells
-    l_anchor = (e_b * a.w_anchor * (1 - face)).sum() / cells if a.w_anchor else e_t.new_zeros(())
+    l_anchor = (e_b * (a.w_anchor * (1 - face) + a.w_anchor_face * face)).sum() / cells \
+        if (a.w_anchor or a.w_anchor_face) else e_t.new_zeros(())
     l_frame = (e_t * a.w_frame * valid).sum() / cells
     with torch.no_grad():
         fm = (face * valid).sum().clamp_min(1e-6)
@@ -448,7 +451,7 @@ def main(argv=None):
             T = item["src"].shape[2]
             exits = [1 if rng.random() < a.p_exit_last else 0 for _ in range(T)]
             seed = rng.randrange(1 << 30)
-            if a.w_anchor:
+            if a.w_anchor or a.w_anchor_face:
                 base = rollout(D, cfg, pipeline, model, item, ref_lat, prompt, seed, exits, plan, device, lora=False)
             else:
                 base = item["tgt"]  # unused (anchor weight 0)

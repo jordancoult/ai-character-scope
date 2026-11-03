@@ -10,7 +10,7 @@ driver → Kling-motion-control G-Star clips. Background and the rejected altern
 | Trainer | `train_lora.py` (+ `setup_train.sh` for the GPU box) |
 | Merge to a servable `.pth` | `merge_lora.py` |
 | Eval | `eval_infer.py` (GPU box) + `mouth_sync_eval.py` (laptop) |
-| Results | `FINDINGS.md`; adapters + eval media in HF `JordanCo/joyai-gstar-lora` (private) |
+| Results | **`FINDINGS.md`: first attempt gave no lip-sync gain** (expression only; longer training breaks the face texture); adapters + eval media in HF `JordanCo/joyai-gstar-lora` (private) |
 
 ## Method (what `train_lora.py` does)
 - **Serving-exact rollouts.** Each step reruns the live inference procedure with upstream's own
@@ -23,12 +23,15 @@ driver → Kling-motion-control G-Star clips. Background and the rejected altern
 - **Segmented backward.** History is detached, so the chunks are independent: each chunk's loss is
   back-propagated right away (`group_backward_fn`, 1 chunk per group). Memory ≈ one forward with activation
   checkpointing: 50.7 GB peak on an H200 for 13-latent (97-frame) clips at 480×840.
-- **Loss** (24-px latent grid, mean over channels): full-frame MSE vs the Kling target + 4 × the same error on
-  the target's mouth cells (`mouth` mask). The targets are the Kling outputs exactly as generated: time-aligned by
-  audio and trimmed, nothing else (the owner's call; Kling's framing and backgrounds are part of the target).
-  Optional `--w-anchor`: regress non-face cells to the frozen base output (needs a second, no-grad rollout; off).
+- **Loss** (24-px latent grid, mean over channels), selectable by flags:
+  - `--w-frame`: full-frame MSE vs the target. With raw Kling clips this **collapses** (run r1, see FINDINGS).
+  - `--w-face`, `--w-mouth`: MSE on the target's face / mouth cells (masks from `face_align.py`). With
+    face-aligned targets (Kling's face warped onto the driver's face; the dataset itself stays as generated).
+  - `--w-anchor`, `--w-anchor-face`: MSE to the frozen base model's output (same noise, no-grad rollout) outside
+    and inside the face, keeping background/body/texture where the live model is.
+  - Best setting so far (r3): face 1, mouth 4, anchor 1, anchor-face 0.5, `--p-exit-last 1.0`, lr 2e-5.
 - **LoRA**: rank 32, alpha 32 on `img/txt_attn_qkv`, `attn_proj`, `mlp.net.0.proj`, `mlp.net.2` in all 40 blocks
-  (167.8 M params, fp32), AdamW lr 1e-4, warm-up 20, cosine to 10%, grad clip 1, 2 clips per step.
+  (167.8 M params, fp32), AdamW (r3: lr 2e-5, warm-up 10), cosine to 10%, grad clip 1, 2 clips per step.
 - **Cached conditioning**: the VAE latents and MiMo prompt embeddings (both live prompts: the committed long one and
   the user's short one, sampled 50/50) are computed once, then the 7B text encoder is freed.
 - Validation every N steps on the held-out driver (`rilango_oficial1`, p15): face/mouth/frame MSE vs Kling with full
