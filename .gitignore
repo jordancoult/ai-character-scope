@@ -31,3 +31,6 @@ cloud/facefix/third_party/
 cloud/facefix/weights/
 cloud/facefix/experiments/**/*.json
 cloud/client/.cache/
+# Dataset builder caches/outputs (downloads, normalized media, clips, shards)
+cloud/pipelines/joyai/training/data/raw/
+cloud/pipelines/joyai/training/data/processed/
