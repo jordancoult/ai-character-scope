@@ -9,7 +9,7 @@ from lp_pass import LPPass
 E = Path(__file__).resolve().parents[1] / "pipelines/joyai/experiments/2026-11-02-mouth"
 outs, ins = read(E / "G_gstar.mp4"), read(E / "in_G_gstar.mp4")
 seq = json.load(open(E / "G_gstar.json"))["source_seq"][:len(outs)]
-lp = LPPass(gain=2.0); drv = lp.driver()
+lp = LPPass(); drv = lp.driver()
 pick = lambda s: ins[min(len(ins) - 1, max(0, s - 1))]
 for mode in ("serial", "pipelined"):
     lp.src.lmk = drv.face.lmk = None

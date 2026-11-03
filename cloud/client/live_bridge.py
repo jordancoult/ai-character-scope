@@ -60,7 +60,10 @@ p.add_argument("--facefix", default="off", choices=["off", "rel", "abs"],
                help="LivePortrait face pass on the local GPU (cloud/lpfast, TensorRT): the generated face's mouth and "
                     "eyes follow the real face. rel = keep the character's own mouth shape and add the speaker's "
                     "motion (cartoon refs, e.g. G-Star); abs = copy the speaker's mouth shape (human refs)")
-p.add_argument("--facefix-gain", type=float, default=None, help="rel: mouth motion gain (default 2.0)")
+p.add_argument("--facefix-gains", default="", help="per-region motion gains, e.g. 'lip=1.3,eye=1,brow=-1' (regions "
+               "lip, eye, brow, brow2, rest; 1 = the speaker's motion as is, 0.5 = half, 0 = off, negative = "
+               "mirrored). Defaults: rel lip=1.3 eye=1 brow=-1 (G-Star); abs lip/eye/brow/brow2/rest=1. "
+               "Live: type '/gain lip 1.5', '/gain all 0.8' or '/gain' (show) + Enter")
 p.add_argument("--facefix-wait", type=float, default=15, help="ms the player waits for a late refined frame")
 p.add_argument("--facefix-hold", type=int, default=2, help="on a miss, repeat the last refined frame if it is at "
                "most this many frames old (instead of popping to the raw frame)")
@@ -218,6 +221,16 @@ class FileWriter:
         self.p.wait()
 
 
+def parse_gains(text):
+    """'lip=1.3,eye=1' -> {'lip': 1.3, 'eye': 1.0}"""
+    out = {}
+    for part in text.replace(" ", "").split(","):
+        if part:
+            k, v = part.split("=")
+            out[k] = float(v)
+    return out
+
+
 class FaceFixer:
     """cloud/lpfast LivePortrait pass (TensorRT 11, laptop GPU) behind two single-thread pools: driver analysis
     when a frame is sent (off the critical path) and the render when the JoyAI frame arrives (in order).
@@ -233,11 +246,11 @@ class FaceFixer:
         self.last_info = None
         self.ms = collections.deque(maxlen=250)
         t = time.time()
-        gain = args.facefix_gain if args.facefix_gain is not None else (2.0 if args.facefix == "rel" else 1.0)
-        self.lp = self.pool_gpu.submit(lambda: LPPass(mode=args.facefix, gain=gain)).result()
+        gains = parse_gains(args.facefix_gains)
+        self.lp = self.pool_gpu.submit(lambda: LPPass(mode=args.facefix, gains=gains)).result()
         self.drv = self.pool_in.submit(self.lp.driver).result()
         gc.freeze()                                       # long-lived objects out of the GC: fewer pauses
-        print(f"[bridge] facefix {args.facefix} (LivePortrait TensorRT, gain {gain}) ready "
+        print(f"[bridge] facefix {args.facefix} (LivePortrait TensorRT, gains {self.lp.gains}) ready "
               f"({time.time() - t:.0f} s warm-up)", flush=True)
 
     def add_input(self, seq, frame):
@@ -411,7 +424,8 @@ async def main():
                 for line in sys.stdin:
                     loop.call_soon_threadsafe(q.put_nowait, line.rstrip("\n"))
             threading.Thread(target=reader, daemon=True).start()
-            print("[bridge] type a new prompt + Enter to change it; /r = reset memory; /q = quit", flush=True)
+            print("[bridge] type a new prompt + Enter to change it; /r = reset memory; /q = quit"
+                  + ("; /gain <lip|eye|brow|all> <value> = face motion gain" if ff is not None else ""), flush=True)
             while not stop.is_set():
                 try:
                     line = (await asyncio.wait_for(q.get(), timeout=0.5)).strip()
@@ -422,6 +436,20 @@ async def main():
                 if line in ("/q", "/quit"):
                     stop.set()
                     break
+                if line.startswith("/gain"):                    # live face-pass gain: /gain [region|all] [value]
+                    if ff is None:
+                        print("[bridge] /gain needs --facefix rel|abs", flush=True)
+                        continue
+                    parts = line.split()
+                    try:
+                        if len(parts) == 3:
+                            ff.lp.set_gain(**{parts[1]: float(parts[2])})
+                        elif len(parts) != 1:
+                            raise ValueError("usage: /gain <lip|eye|brow|brow2|rest|all> <value>")
+                        print(f"[bridge] face gains {ff.lp.gains}", flush=True)
+                    except ValueError as e:
+                        print(f"[bridge] {e}", flush=True)
+                    continue
                 if line not in ("/r", "/reset"):
                     start["prompt"] = line
                     print(f"[bridge] new prompt: {line[:100]}", flush=True)

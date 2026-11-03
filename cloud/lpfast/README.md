@@ -5,13 +5,28 @@ re-rendered so that its **mouth and eyes follow the real face**. Head pose, fram
 the face stay JoyAI's. It replaces the old `cloud/facefix` LivePortrait/HyperSwap pass (128 px, judged "not an
 improvement"); same bridge flag, `--facefix rel|abs`.
 
-## Results (recorded 5090 runs replayed with exact `source_seq` pairing; `cloud/client/mouth_sync.py`)
-| Clip | JoyAI alone | lpfast | Mode |
-|---|---|---|---|
-| G-Star, talking close-up (`G_gstar`, landscape) | lip-gap corr **0.03**, motion range 0.62 | **0.79–0.81**, range 1.03 (lag 0) | `rel`, gain 2 |
-| Human ref, same driver (`C_mouthprompt`) | 0.25, range 0.30 | **0.98**, range 0.91 (lag 0) | `abs` |
-| Human ref, gestures/glasses/hand at face (`human`, DTW-paired) | | hands intact, effect fades on large head tilts | `abs` |
-| G-Star boxer clip (profile, fast motion, face leaving frame) | JoyAI draws no face most of the time | passes JoyAI through untouched there (no artifacts) | `rel` |
+## Results (recorded 5090 runs replayed with exact `source_seq` pairing)
+Correlation of the output with the driver (MediaPipe; `expr_sync.py`: lip gap, eyelid opening, brow height):
+
+| Clip | | lips | eyes | brows |
+|---|---|---|---|---|
+| G-Star talking close-up (`G_gstar`) | JoyAI alone | 0.03 | 0.03 | −0.19 |
+| | **lpfast rel, default gains** (lip 1.3, eye 1, brow −1) | **0.77** | **0.59** | **0.60** |
+| Human ref, same driver (`C_mouthprompt`) | JoyAI alone | 0.25 | 0.28 | 0.57 |
+| | **lpfast abs, full expression** (all regions 1) | **0.98** | **0.98** | **0.97** |
+
+- Human `gestures/glasses` clip (DTW-paired): hands at the face edge stay intact; the effect fades on large tilts.
+- G-Star boxer clip (profile, fast motion): JoyAI draws no face most of the time; lpfast passes those frames through.
+- **G-Star's brows are mirrored**: on his cartoon face LivePortrait's brow keypoints act the other way round
+  (brow gain +1: −0.54, −1: +0.58; a human ref in rel mode is +0.94 with +1). His brows sit under the cap brim,
+  so the motion is small either way.
+
+### Gains (per region, live-tunable)
+Regions = groups of LivePortrait's 21 implicit expression keypoints: `lip` (6, 12, 14, 17, 19, 20), `eye` (11, 13,
+15, 16, 18), `brow` (1, 2), `brow2` (9 y/z), `rest` (3/4 y, 5/8 z: cheeks/jaw; with brow2 = LivePortrait's full
+expression set). 1 = the speaker's motion as is, 0.5 = half, 0 = JoyAI's own expression, negative = mirrored.
+Bridge: `--facefix-gains 'lip=1.3,eye=1,brow=-1'`; while running type `/gain lip 1.5`, `/gain all 0.8`, `/gain`
+(show) + Enter (applied from the next frame, no restart).
 
 Review media (gitignored, regenerate with `run_offline.py`): `experiments/2026-11-03-first/*/review.mp4`
 (input | JoyAI | lpfast).
@@ -65,12 +80,13 @@ cloud/facefix/.venv/bin/python cloud/client/live_bridge.py --url ws://127.0.0.1:
     --prompt "$(cat cloud/pipelines/joyai/prompts/gstar.txt)" --facefix rel        # human refs: --facefix abs
 # offline replay of a recorded run (input as sent + JoyAI output [+ stats JSON with source_seq, else DTW])
 cloud/facefix/.venv/bin/python cloud/lpfast/run_offline.py --out OUT.mp4 --inp IN.mp4 --stats OUT.json \
-    --dst cloud/lpfast/experiments/NAME --mode rel --gain 2
+    --dst cloud/lpfast/experiments/NAME --mode rel [--gains lip=1.3,eye=1,brow=-1]
+cloud/facefix/.venv/bin/python cloud/lpfast/expr_sync.py --input IN.mp4 --output cloud/lpfast/experiments/NAME/lp.mp4 --stats OUT.json
 ```
 Disk: TensorRT 11 libs ~6.3 GB in the venv, ONNX ~0.7 GB, engines ~0.6 GB.
 
 ## Open / next
-- Eyes follow only partly on G-Star (his lids are drawn half-shut); `--eye-gain` in `run_offline.py` is untuned.
+- G-Star's eyes follow at 0.59 (his lids are drawn half-shut); the eye gain is untuned beyond 1.
 - A hand directly over the mouth isn't in any recording (hands at the face edge are fine); no hand gate yet.
 - Not yet run against the real 5090 server (validated through the bridge with `cloud/facefix/mock_server.py`
   replaying a recorded 5090 run at its chunk rhythm).

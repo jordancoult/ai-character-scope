@@ -12,9 +12,10 @@ Split for the live pipeline:
     paste into the face ROI only (GPU). All keypoint math stays on the GPU; one sync for the landmarks, one for the
     ROI download.
 Expression transfer, mode "rel" (default, best for cartoon refs):
-    exp[k] = base_out[k] + gain * (exp_in[k] - neutral_in[k])   for k in the lip / eye keypoints
+    exp[k] = base_out[k] + gain_r * (exp_in[k] - neutral_in[k])   for k in region r (lip / eye / brow / rest)
   base_out = slow EMA of JoyAI's own expression (removes its chunk-periodic mouth wobble), neutral_in = slow EMA of
-  the driver's (their resting face). Mode "abs": exp[k] = exp_in[k] (human mouth shape).
+  the driver's (their resting face). Mode "abs": exp[k] = exp_out[k] + gain_r * (exp_in[k] - exp_out[k]) (gain 1 =
+the human expression as is). Gains per region, live-adjustable: LPPass.set_gain(lip=1, eye=1, brow=1, rest=0).
 """
 
 import math
@@ -32,8 +33,22 @@ from src.utils.crop import _estimate_similar_transform_from_pts
 from trt_runtime import Engine
 
 ENG = flp_compat.ENG
-LIP_IDX = [6, 12, 14, 17, 19, 20]
-EYE_IDX = [11, 13, 15, 16, 18]
+# LivePortrait implicit-keypoint groups (official LivePortrait index sets; brows/rest from its "exp" region):
+# (keypoint, axes) per region. Each region has its own gain, adjustable live (LPPass.set_gain).
+REGIONS = {
+    "lip": [(k, (0, 1, 2)) for k in (6, 12, 14, 17, 19, 20)],
+    "eye": [(k, (0, 1, 2)) for k in (11, 13, 15, 16, 18)],
+    "brow": [(1, (0, 1, 2)), (2, (0, 1, 2))],
+    "brow2": [(9, (1, 2))],  # part of LivePortrait's full-expression set near the brows / upper lids
+    "rest": [(3, (1,)), (4, (1,)), (5, (2,)), (8, (2,))],  # cheeks / jaw parts of LivePortrait's full expression
+}
+# defaults per mode (tested 2026-11-03, expr_sync.py): rel = the G-Star preset (his cartoon face maps LivePortrait's
+# brow keypoints the other way round: brow -1 -> brow corr +0.58, +1 -> -0.54; mouth 1.3 = the user's pick);
+# abs = human refs, LivePortrait's full expression set (lip/eye/brow corr 0.98/0.98/0.97).
+DEFAULT_GAINS = {
+    "rel": {"lip": 1.3, "eye": 1.0, "brow": -1.0, "brow2": 0.0, "rest": 0.0},
+    "abs": {"lip": 1.0, "eye": 1.0, "brow": 1.0, "brow2": 1.0, "rest": 1.0},
+}
 IDX66 = None
 _UNSET = object()
 DET_STREAM = None
@@ -146,7 +161,7 @@ class Driver:
 
 
 class LPPass:
-    def __init__(self, mode="rel", regions=("lip", "eyes"), gain=1.0, eye_gain=1.0, base_ema=0.08,
+    def __init__(self, mode="rel", gains=None, base_ema=0.08,
                  neutral_ema=0.01, fade=0.25, drv_smooth=0.0, yaw_gate=(30.0, 45.0), pitch_gate=(20.0, 35.0)):
         global DET_STREAM
         DET_STREAM = DET_STREAM or torch.cuda.Stream()
@@ -159,9 +174,9 @@ class LPPass:
         self.stitch = Engine(ENG / "stitching.engine", self.src.stream)
         mt = cv2.imread(str(flp_compat.FLP / "assets" / "mask_template.png"), cv2.IMREAD_GRAYSCALE)
         self.mask = torch.from_numpy(mt.astype(np.float32) / 255).cuda()[None]  # 1x512x512
-        self.mode, self.gain, self.eye_gain = mode, gain, eye_gain
-        self.idx = [(LIP_IDX, gain)] if "lip" in regions else []
-        self.idx += [(EYE_IDX, eye_gain)] if "eyes" in regions else []
+        self.mode = mode
+        self.gains = dict(DEFAULT_GAINS[mode])
+        self.set_gain(**(gains or {}))
         self.base_ema, self.neutral_ema, self.fade, self.drv_smooth = base_ema, neutral_ema, fade, drv_smooth
         self.yaw_gate, self.pitch_gate = yaw_gate, pitch_gate
         self.base_out = self.neutral_in = self.exp_in = None
@@ -170,6 +185,24 @@ class LPPass:
         self.timing = {}
 
         self._warmup()
+
+    def set_gain(self, **g):
+        """Per-region motion gain (lip / eye / brow / brow2 / rest; `all` scales every region). 0 = JoyAI's own
+        expression there, 1 = the driver's motion as is, 0.5 = half, 2 = double, negative = mirrored (G-Star's brows). abs mode: 1 = the driver's expression, 0.5 = a
+        50/50 blend with JoyAI's. Safe to call from another thread while rendering."""
+        if "all" in g:
+            f = g.pop("all")
+            g = {k: v * f for k, v in self.gains.items()} | g
+        bad = set(g) - set(REGIONS)
+        if bad:
+            raise ValueError(f"unknown region(s) {sorted(bad)}; use {sorted(REGIONS)} or all")
+        self.gains.update({k: float(v) for k, v in g.items()})
+        W = torch.zeros(1, 21, 3, device="cuda")
+        for name, kps in REGIONS.items():
+            for k, axes in kps:
+                W[0, k, list(axes)] = self.gains[name]
+        self.W, self.Wm = W, (W != 0).float()  # swapped atomically (render reads self.W once per frame)
+        return dict(self.gains)
 
     def _warmup(self):
         """Run every engine once (first executions cost 50-120 ms: lazy TensorRT/CUDA init)."""
@@ -246,10 +279,11 @@ class LPPass:
         self.exp_in = e_in
         self.base_out = s["exp"].clone() if self.base_out is None else self.base_out.lerp_(s["exp"], self.base_ema)
         self.neutral_in = e_in.clone() if self.neutral_in is None else self.neutral_in.lerp_(e_in, self.neutral_ema)
-        exp = s["exp"].clone()
-        for idx, g in self.idx:
-            exp[:, idx] = e_in[:, idx] if self.mode == "abs" else \
-                self.base_out[:, idx] + g * (e_in[:, idx] - self.neutral_in[:, idx])
+        W, Wm = self.W, self.Wm
+        if self.mode == "abs":  # blend towards the driver's expression
+            exp = s["exp"] + W * (e_in - s["exp"])
+        else:  # character's resting expression + scaled driver motion; gain-0 regions keep JoyAI's own expression
+            exp = s["exp"] * (1 - Wm) + Wm * (self.base_out + W * (e_in - self.neutral_in))
         R = rot_matrix(s["pitch"], s["yaw"], s["roll"])
         sc, t, kp = s["scale"][..., None], s["t"], s["kp"]
         x_s = (kp @ R + s["exp"]) * sc

@@ -95,9 +95,8 @@ def main():
                    "without it the pairing is estimated by DTW on motion")
     p.add_argument("--dst", required=True)
     p.add_argument("--mode", default="rel", choices=["rel", "abs"])
-    p.add_argument("--regions", default="lip,eyes")
-    p.add_argument("--gain", type=float, default=1.0)
-    p.add_argument("--eye-gain", type=float, default=1.0)
+    p.add_argument("--gains", default="", help="per-region gains, e.g. lip=1,eye=1,brow=1,rest=0 (defaults: "
+                   "lip/eye/brow 1, rest 0)")
     p.add_argument("--base-ema", type=float, default=0.08)
     p.add_argument("--drv-smooth", type=float, default=0.0)
     p.add_argument("--profile", action="store_true", help="sync per stage (stage_ms), slower")
@@ -115,8 +114,8 @@ def main():
     else:
         seq = [int(i) + 1 for i in align_dtw(ins, outs)]
         print("pairing: DTW")
-    lp = LPPass(mode=a.mode, regions=tuple(a.regions.split(",")), gain=a.gain, eye_gain=a.eye_gain,
-                base_ema=a.base_ema, drv_smooth=a.drv_smooth)
+    gains = {k: float(v) for k, v in (x.split("=") for x in a.gains.split(",") if x)}
+    lp = LPPass(mode=a.mode, gains=gains, base_ema=a.base_ema, drv_smooth=a.drv_smooth)
     drv = lp.driver()
     from concurrent.futures import ThreadPoolExecutor
     pool = ThreadPoolExecutor(1)  # live: the driver frame is analysed when it is sent, in parallel
