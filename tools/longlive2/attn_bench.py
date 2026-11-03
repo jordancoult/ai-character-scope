@@ -1,5 +1,5 @@
 import sys, os, time, torch, torch.nn.functional as F
-sys.path.insert(0, os.path.expanduser("~/personal/ai-character-scope/longlive2/.sage2/pkg"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "longlive2", ".sage2", "pkg"))
 import sageattention as sa
 print("sageattention from", sa.__file__)
 import flash_attn

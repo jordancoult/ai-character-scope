@@ -3,7 +3,7 @@
 Everything stays in the project folder, and Scope's environment is used without changing it. Results are in `experiments/2026-11-01-longlive2/FINDINGS.md`.
 
 ```bash
-cd ~/personal/ai-character-scope
+cd ~/personal/ai-livestream   # repo root (your clone folder)
 git clone --depth 1 https://github.com/NVlabs/LongLive.git longlive2            # gitignored
 git -C longlive2 apply ../tools/longlive2/skip_clean.patch                       # LL2_SKIP_CLEAN switch
 # FourOverSix (NVFP4 kernels; installs prebuilt sm_120 kernels) + sentencepiece into a side folder

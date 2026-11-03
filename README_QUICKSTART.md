@@ -114,7 +114,7 @@ Still to do: real webcam + OBS test · cone-shaped head · optional GPU clock lo
 Just want to start it? See [START_HERE.md](START_HERE.md).
 
 ```bash
-cd ai-livestream   # your clone folder (any name; on the original laptop: ~/personal/ai-character-scope)
+cd ai-livestream   # your clone folder (any name; on the original laptop: ~/personal/ai-livestream)
 
 # Live: webcam -> character -> /dev/video10 "AI_Scope_Cam" (720x1280) + delayed mic "AI_Character_Mic"
 CHARACTER_REF=assets/char_front.png \

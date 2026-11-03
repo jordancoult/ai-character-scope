@@ -2,7 +2,8 @@
 usage: ll2_run.py OUT.mp4 STEPS LATENT_FRAMES [H W] [prompt]
 Runs from the LongLive2.0 repo dir (it uses relative wan_models/ paths). Text encoder stays on CPU."""
 import os, sys, time
-REPO = os.path.expanduser("~/personal/ai-character-scope/longlive2/LongLive2.0")
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))  # repo root
+REPO = os.path.join(ROOT, "longlive2", "LongLive2.0")
 sys.path[:0] = [os.path.join(REPO, "..", ".deps"), REPO]
 os.chdir(REPO)
 import logging, warnings
@@ -25,7 +26,7 @@ if SAGE:
     # LL2_SAGE=1: SageAttention v1 everywhere; =2: SageAttention 2 everywhere; =2first: SA2 on the first
     # denoising step only (later steps + clean pass keep exact flash-attention)
     if SAGE.startswith("2"):
-        sys.path.insert(0, os.path.expanduser("~/personal/ai-character-scope/longlive2/.sage2/pkg"))
+        sys.path.insert(0, os.path.join(ROOT, "longlive2/.sage2/pkg"))
         for m in [m for m in sys.modules if m.startswith("sageattention")]:
             del sys.modules[m]
     from sageattention import sageattn
@@ -46,7 +47,7 @@ from utils.config import normalize_config
 from utils.inference_utils import prepare_single_prompt_inputs, save_video, setup_nvfp4_pipeline
 
 cfg = OmegaConf.load("configs/nvfp4/inference_nvfp4.yaml")
-cfg.checkpoints.generator_ckpt = os.path.expanduser("~/personal/ai-character-scope/models/LongLive-2.0-5B/model_4o6.pt")
+cfg.checkpoints.generator_ckpt = os.path.join(ROOT, "models/LongLive-2.0-5B/model_4o6.pt")
 cfg.model_quant_use_transformer_engine = False
 cfg.model_quant_te_fallback_to_fouroversix = False
 cfg.inference.kv_quant = os.environ.get("LL2_KVQ") == "1"
@@ -124,10 +125,10 @@ def gen(n):
     torch.cuda.synchronize(); t = time.time()
     pipe.inference(noise=nz, text_prompts=pr, return_latents=True)
     torch.cuda.synchronize(); return time.time() - t
-sys.path.insert(0, os.path.expanduser("~/personal/ai-character-scope/models/LongLive-2.0-5B/fastvae"))
+sys.path.insert(0, os.path.join(ROOT, "models/LongLive-2.0-5B/fastvae"))
 from taehv import TAEHV
 import imageio, numpy as np
-tae = TAEHV(os.path.expanduser("~/personal/ai-character-scope/models/LongLive-2.0-5B/fastvae/taew2_2.pth")).to(dev, torch.float16)
+tae = TAEHV(os.path.join(ROOT, "models/LongLive-2.0-5B/fastvae/taew2_2.pth")).to(dev, torch.float16)
 gen(64 if os.environ.get("LL2_COMPILE") == "1" else 16)  # warm-up (compiled: cover full-KV shapes)
 nz = torch.randn([1, 128, 48, H // 16, W // 16], device=dev, dtype=noise.dtype, generator=torch.Generator(dev).manual_seed(1))
 torch.cuda.synchronize(); t = time.time()
