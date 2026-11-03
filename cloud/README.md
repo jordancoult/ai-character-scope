@@ -38,7 +38,7 @@ experiments/), keep it provider-independent, and add a row here.
    cloud/infra/pod.sh 'cd /workspace && bash setup.sh all'                   # artifacts + env + weights
    cloud/infra/pod.sh 'cd /workspace && setsid nohup bash -c "bash run_server.sh; echo EXIT=\$?" > logs/server.log 2>&1 < /dev/null & disown'
    # ready when logs/server.log shows "Uvicorn running"
-   ssh -f -N -i .secrets/runpod_ed25519 -L 18080:127.0.0.1:8080 -p PORT root@HOST
+   cloud/infra/tunnel.sh start          # self-healing tunnel to localhost:18080 (stop / status too)
    ```
 3. Live into OBS:
    ```bash
