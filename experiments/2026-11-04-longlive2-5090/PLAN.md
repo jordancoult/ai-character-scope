@@ -35,6 +35,19 @@
 - SageAttention 2 OK end-to-end (v1 damages faces). Window 32 (stock) > 24 > 16 (blobs).
 - Chunk = 8 latent frames = 32 video frames = 1.33 s → latency floor for changes; test 4-latent chunks.
 
+## Findings so far (5090)
+- Bench (`ll2_generate.py`, 1024×576 unless noted, clean pass every chunk, window 32, compiled, end-to-end fps incl.
+  TAE decode): S2 exact NVFP4-KV 31.7 · S2 exact bf16-KV 33.3 · S2 Sage2 44.5 · S4 exact 20.0 · S4 Sage2 bf16-KV 29.7 ·
+  S2 1280×704 exact 18.5 · S2 1280 Sage2 27.5 (NVFP4 KV) / 28.5 (bf16 KV, 29.5 GB). Visual: S4+Sage2 ≈ S2-exact best;
+  1280+Sage2 grows a glass object (rejected); S2-exact showed ghost hands once.
+- bf16 KV + T5 on GPU (11 GB) OOMs on 32 GB → NVFP4 KV with the T5 on the GPU (fast prompt encodes).
+- Streaming engine `tools/longlive2/ll2_stream.py` works for T2V / I2V / V2V / person-keep (`ll2_stream_test.py`):
+  S4+Sage2 steady 26 fps (T2V/I2V), V2V 26–32 fps. Compile recompiles on new KV lengths → warm up.
+- Prompt switching needs KV-recache (implemented: ~860 ms one-off per switch) — without it the new prompt barely
+  takes hold. Hard cut must also clear the attention sink (`sink_size 8`, `multi_shot_sink`) or the old scene bleeds in.
+- V2V: strength ≤ 0.85 barely changes the scene; use 0.9–0.98 (0.98 ≈ new scene following the input's layout/motion).
+- I2V: starts from the image correctly; with strong motion (waving) the face smears (S4+Sage2) — testing S2-exact.
+
 ## Steps / status
 - [x] Rent 5090, watchdog, env, weights (03:41–03:55 UTC)
 - [ ] Benchmark quality options at 1024×576 / 1280×704 (bench script `/workspace/ll2_bench.sh`, log `/workspace/bench.log`,
