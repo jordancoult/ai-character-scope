@@ -47,7 +47,7 @@ from utils.config import normalize_config
 from utils.inference_utils import prepare_single_prompt_inputs, save_video, setup_nvfp4_pipeline
 
 cfg = OmegaConf.load("configs/nvfp4/inference_nvfp4.yaml")
-cfg.checkpoints.generator_ckpt = os.path.join(ROOT, "models/LongLive-2.0-5B/model_4o6.pt")
+cfg.checkpoints.generator_ckpt = os.environ.get("LL2_CKPT") or os.path.join(ROOT, "models/LongLive-2.0-5B/model_4o6.pt")
 cfg.model_quant_use_transformer_engine = False
 cfg.model_quant_te_fallback_to_fouroversix = False
 cfg.inference.kv_quant = os.environ.get("LL2_KVQ") == "1"
