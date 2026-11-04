@@ -50,13 +50,13 @@
 
 ## Steps / status
 - [x] Rent 5090, watchdog, env, weights (03:41–03:55 UTC)
-- [ ] Benchmark quality options at 1024×576 / 1280×704 (bench script `/workspace/ll2_bench.sh`, log `/workspace/bench.log`,
+- [x] Benchmark quality options at 1024×576 / 1280×704 (bench script `/workspace/ll2_bench.sh`, log `/workspace/bench.log`,
       videos `/workspace/bench/`): A S2 KVQ, B S2 bf16 KV, C S2 Sage2, D S4 4-step, E S2 1280, F S2 1280 Sage2
-- [ ] Pick the best-quality config ≥ 24 fps (end-to-end incl. TAE decode)
-- [ ] Streaming engine `tools/longlive2/ll2_stream.py`: persistent model + KV, chunk loop, prompt switch (T5 on GPU,
+- [x] Pick the best-quality config ≥ 24 fps (end-to-end incl. TAE decode)
+- [x] Streaming engine `tools/longlive2/ll2_stream.py`: persistent model + KV, chunk loop, prompt switch (T5 on GPU,
       optional recache), I2V start, V2V (TAE encoder + noise strength), block size 8 vs 4 (latency)
-- [ ] Server (websocket) + client (`cloud/client/ll2_client.py`: webcam/file/image in, ffplay out, typed prompt + params)
-- [ ] Demos: T2V prompt changes, ref image → person video, webcam v2v morph (use assets/ clips, not the webcam)
-- [ ] Stretch: directional prompts / SCOPE; spatial-noise interaction
-- [ ] Docs: `tools/longlive2/README.md` (toolbox entry), FINDINGS.md here; HF upload of compile caches if useful
+- [x] Server (websocket) + client (`cloud/client/ll2_client.py`: webcam/file/image in, ffplay out, typed prompt + params)
+- [x] Demos: T2V prompt changes, ref image → person video, webcam v2v morph (use assets/ clips, not the webcam)
+- [x] Stretch (partial, see FINDINGS §4): directional prompts / SCOPE; spatial-noise interaction
+- [x] Docs: `tools/longlive2/README.md` (toolbox entry), FINDINGS.md here; HF upload of compile caches if useful
 - [ ] Destroy the instance; final report with spend and demo links

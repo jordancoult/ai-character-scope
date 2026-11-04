@@ -45,7 +45,7 @@ def _log(msg):
 
 class LL2Engine:
     def __init__(self, height=576, width=1024, ckpt="S2", steps=None, kv_quant=True, local_attn=32, block=8,
-                 sage=False, compile=True, clean_every=1, t5_device="cuda", seed=0):
+                 sage=False, compile=True, clean_every=1, t5_device="cuda", seed=0, recache_frames=16):
         """ckpt: S2 (2-step) | S4 (4-step) | path. block: latent frames per chunk (8 = native = 32 video frames;
         4 halves the reaction latency). clean_every: 1 = clean KV pass every chunk (best consistency), 2 = every
         2nd, 0 = never. sage: SageAttention 2 (faster, slightly less exact)."""
@@ -54,6 +54,7 @@ class LL2Engine:
         try:
             self._build(height, width, ckpt, steps, kv_quant, local_attn, block, sage, compile, clean_every,
                         t5_device, seed)
+            self.recache_frames = recache_frames
         finally:
             os.chdir(cwd)
 
@@ -214,10 +215,12 @@ class LL2Engine:
         return torch.randn([1, n, 48, self.h, self.w], device=self.dev, dtype=self.dtype, generator=self.gen)
 
     @torch.no_grad()
-    def step(self, input_frames=None, strength=1.0, strength_map=None, decode=True):
+    def step(self, input_frames=None, strength=1.0, strength_map=None, decode=True, abort=None):
         """Generate the next chunk. input_frames: list/array of 4*block RGB uint8 frames (V2V) or None.
         strength: V2V noise level (0..1). strength_map: optional [h, w] tensor/array (latent grid) of per-pixel
-        strengths (overrides strength). Returns a list of RGB uint8 frames (or latents if decode=False)."""
+        strengths (overrides strength). abort: optional callable checked between denoising passes; if it returns
+        True the chunk is dropped (returns None; the next step regenerates the same position). Returns a list of RGB
+        uint8 frames (or latents if decode=False)."""
         from pipeline.causal_diffusion_inference import _overwrite_i2v_context, _zero_i2v_context_timestep
         p, n, fsl = self.pipe, self.block, self.pipe.frame_seq_length
         t_all = time.perf_counter()
@@ -236,8 +239,11 @@ class LL2Engine:
             self.hist = []
         if recache:  # rebuild the window's KV under the new prompt from the kept clean latents
             t_rc = time.perf_counter()
-            p._zero_kv_data(p.kv_cache_pos, self.hist[0][1] * fsl)
-            for lat, st in self.hist:
+            # rebuild only the most recent `recache_frames` latent frames (the sink stays): halves the one-off cost
+            k = max(1, -(-int(self.recache_frames) // n))
+            hist = self.hist[-k:]
+            p._zero_kv_data(p.kv_cache_pos, hist[0][1] * fsl)
+            for lat, st in hist:
                 for b in range(p.num_transformer_blocks):
                     p.crossattn_cache_pos[b]["is_init"] = False
                 p.generator(noisy_image_or_video=lat, conditional_dict=cond,
@@ -256,6 +262,8 @@ class LL2Engine:
             # text (and I2V first chunk): upstream scheduler (UniPC), exactly as NVlabs' pipeline
             latents = noise
             for t in timesteps:
+                if abort is not None and abort():
+                    return None
                 ts = t * torch.ones([1, n], device=self.dev, dtype=torch.float32)
                 if i2v:
                     latents = _overwrite_i2v_context(latents, self.image_latent, 1)
@@ -276,6 +284,8 @@ class LL2Engine:
             sig = [s_top] + [float(t) / 1000.0 for t in timesteps if float(t) / 1000.0 < s_top - 0.02]
             x = (1 - sig[0]) * x_in + sig[0] * noise
             for i, sg in enumerate(sig):
+                if abort is not None and abort():
+                    return None
                 if m is not None:  # pixels whose start level is below sg haven't started: keep the noised input
                     keep = (m < sg).to(self.dtype)
                     x = keep * ((1 - sg) * x_in + sg * self._noise(n)) + (1 - keep) * x
@@ -304,7 +314,7 @@ class LL2Engine:
         frames = self._decode(latents)
         rc = self.stats.get("recache_ms") if recache else None
         self.stats = {"dit_ms": 1000 * t_dit, "total_ms": 1000 * (time.perf_counter() - t_all), "frames": len(frames),
-                      "recache_ms": rc, "cut": bool(cut)}
+                      "recache_ms": rc, "cut": bool(cut), "v2v": x_in is not None}
         return frames
 
     def _encode_frames(self, frames):

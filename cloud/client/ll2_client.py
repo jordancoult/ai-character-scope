@@ -44,6 +44,8 @@ p.add_argument("--buffer", type=int, default=6, help="frames buffered before pla
 p.add_argument("--output", default="ffplay", help="ffplay, an .mp4 path, or 'ffplay,out.mp4'")
 p.add_argument("--seconds", type=float, default=0)
 p.add_argument("--script", default="", help="timed commands 'T:cmd;T:cmd' (seconds from start; same syntax as typing)")
+p.add_argument("--no-snap", action="store_true", help="keep playing queued frames of the old prompt after a change "
+               "(default: drop them as soon as the new prompt's frames arrive = lowest latency)")
 p.add_argument("--side-by-side", action="store_true", help="recording: input | output (v2v)")
 a = p.parse_args()
 W, H = (int(v) for v in a.size.split("x"))
@@ -104,9 +106,10 @@ async def main():
     import websockets
     tunnel = open_tunnel()
     inp = Input(a.input) if a.input else None
-    seg = Segmenter() if a.person else None
+    state_seg = {"seg": Segmenter() if a.person else None}
     state = {"mode": a.mode, "person": a.person, "version": 0, "sent_t": {}}
-    q = deque()  # (frame_bgr, version)
+    q = deque()  # (frame_bgr, version, source input id)
+    sent_frames = {}  # input id -> (frame, send time)
     stop = threading.Event()
     sinks = []
     outs = [o for o in a.output.split(",") if o]
@@ -153,6 +156,8 @@ async def main():
                 msg = {"type": "set", "mode": state["mode"]}
             elif line.startswith("/person "):
                 state["person"] = line.split()[1] == "on"
+                if state["person"] and state_seg["seg"] is None:
+                    state_seg["seg"] = Segmenter()
                 msg = {"type": "set", "person": state["person"]}
             elif line.startswith("/image "):
                 msg = {"type": "image", "data": base64.b64encode(open(os.path.expanduser(line[7:]), "rb").read()).decode()}
@@ -197,10 +202,13 @@ async def main():
             while not stop.is_set():
                 if inp is not None and inp.frame is not None and state["mode"] == "v2v":
                     f = inp.frame
+                    fid = state["fid"] = state.get("fid", 0) + 1
+                    sent_frames[fid] = (f, time.time())
+                    sent_frames.pop(fid - 600, None)
                     ok, jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    await ws.send(b"F" + jpg.tobytes())
-                    if state["person"] and seg is not None:
-                        ok, mj = cv2.imencode(".jpg", seg(f), [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    await ws.send(b"F" + struct.pack("<I", fid) + jpg.tobytes())
+                    if state["person"] and state_seg["seg"] is not None:
+                        ok, mj = cv2.imencode(".jpg", state_seg["seg"](f), [cv2.IMWRITE_JPEG_QUALITY, 80])
                         await ws.send(b"M" + mj.tobytes())
                 nxt += period
                 await asyncio.sleep(max(0, nxt - time.time()))
@@ -208,24 +216,35 @@ async def main():
         async def receiver():
             async for m in ws:
                 if isinstance(m, bytes):
-                    seq, ver, chunk = struct.unpack("<III", m[:12])
-                    img = cv2.imdecode(np.frombuffer(m[12:], np.uint8), cv2.IMREAD_COLOR)
-                    q.append((img, ver))
+                    seq, ver, chunk, src = struct.unpack("<IIII", m[:16])
+                    img = cv2.imdecode(np.frombuffer(m[16:], np.uint8), cv2.IMREAD_COLOR)
+                    if not a.no_snap and q and ver > q[-1][1]:  # first frame of a newer version: drop older queued
+                        dropped = len(q)
+                        q.clear()
+                        stats["snapped"] = stats.get("snapped", 0) + dropped
+                    q.append((img, ver, src))
                 else:
                     j = json.loads(m)
                     if j.get("type") == "stats" and j["chunk"] % 5 == 0:
                         print(f"[client] server chunk {j['chunk']}: gen {j['gen_ms']} ms ({j['gen_fps']} fps), "
                               f"ahead {j['ahead_frames']} frames, buffer {len(q)}", flush=True)
 
+        async def reporter():  # frames consumed (played + dropped): the server paces generation on this
+            while not stop.is_set():
+                await ws.send(json.dumps({"type": "played", "n": stats["played"] + stats.get("snapped", 0)}))
+                await asyncio.sleep(0.1)
+
         async def player():
             period = 1.0 / a.fps
             while len(q) < a.buffer and not stop.is_set():
                 await asyncio.sleep(0.005)
             nxt = time.time()
-            last, shown_ver = None, 0
+            last, shown_ver, last_src = None, 0, None
             while not stop.is_set():
                 if q:
-                    last, ver = q.popleft()
+                    last, ver, last_src = q.popleft()
+                    if last_src in sent_frames:
+                        stats.setdefault("in_lat", []).append(time.time() - sent_frames[last_src][1])
                     stats["played"] += 1
                     if ver > shown_ver:
                         if ver in state["sent_t"]:
@@ -239,7 +258,8 @@ async def main():
                 if last is not None:
                     fr = last
                     if a.side_by_side and inp is not None and inp.frame is not None:
-                        fr = np.hstack([inp.frame, last])
+                        src_f = sent_frames.get(last_src, (inp.frame, 0))[0]  # the input this frame was made from
+                        fr = np.hstack([src_f, last])
                     for s in sinks:
                         try:
                             s.stdin.write(fr.tobytes())
@@ -251,7 +271,8 @@ async def main():
                 await asyncio.sleep(max(0, nxt - time.time()))
             await ws.close()
 
-        await asyncio.gather(receiver(), player(), sender(), stdin_reader(), scripted(), return_exceptions=True)
+        await asyncio.gather(receiver(), player(), sender(), stdin_reader(), scripted(), reporter(),
+                             return_exceptions=True)
     for s in sinks:
         try:
             s.stdin.close()
@@ -261,8 +282,10 @@ async def main():
     if tunnel:
         tunnel.terminate()
     lat = stats["latency"]
-    print(f"[client] RESULT played {stats['played']} repeated {stats['repeated']}" +
-          (f", change latency median {sorted(lat)[len(lat) // 2]:.2f} s (n={len(lat)})" if lat else ""), flush=True)
+    print(f"[client] RESULT played {stats['played']} repeated {stats['repeated']} snapped {stats.get('snapped', 0)}" +
+          (f", change latency median {sorted(lat)[len(lat) // 2]:.2f} s (n={len(lat)})" if lat else "") +
+          (f", input->output latency median {sorted(stats['in_lat'])[len(stats['in_lat']) // 2]:.2f} s"
+           if stats.get("in_lat") else ""), flush=True)
 
 
 if __name__ == "__main__":
