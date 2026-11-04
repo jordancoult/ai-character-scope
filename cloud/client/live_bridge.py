@@ -607,6 +607,25 @@ async def main():
                                 say("usage: /gain <lip|eye|brow|brow2|rest|all> <value>")
                         elif ff is not None:
                             say(f"face gains {ff.lp.gains}")
+                    elif line.startswith("/limit") and ff is not None:   # face-pass soft limits (lpfast)
+                        try:
+                            if len(parts) == 3:
+                                v = parts[2]
+                                ff.lp.set_limit(**{parts[1]: None if v in ("off", "0") else (
+                                    tuple(float(x) for x in v.split(":")) if ":" in v else float(v))})
+                            say(f"face limits {ff.lp.limits}")
+                        except ValueError as e:
+                            say(f"usage: /limit <region> <max | knee:max | off> ({e})")
+                    elif line.startswith("/gate") and ff is not None:    # face-pass gates (lpfast)
+                        try:
+                            if len(parts) >= 3:
+                                k = {"yaw": "drv_yaw", "pitch": "drv_pitch", "hold": "cover_hold"}.get(parts[1], parts[1])
+                                val = (parts[2] in ("on", "1", "true")) if k in ("visibility", "hands") else (
+                                    int(parts[2]) if k == "cover_hold" else (float(parts[2]), float(parts[3])))
+                                ff.lp.set_gate(**{k: val})
+                            say(f"face gates {ff.lp.gates()}")
+                        except (ValueError, IndexError) as e:
+                            say(f"usage: /gate yaw|pitch|cover|src_yaw|src_pitch <start> <off> | score <full> <off> | visibility on|off | hold <n> ({e})")
                     elif line in ("/r", "/reset"):
                         await apply({"reset": True})
                     else:

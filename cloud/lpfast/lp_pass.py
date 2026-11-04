@@ -45,6 +45,14 @@ REGIONS = {
 # defaults per mode (tested 2026-11-03, expr_sync.py): rel = the G-Star preset (his cartoon face maps LivePortrait's
 # brow keypoints the other way round: brow -1 -> brow corr +0.58, +1 -> -0.54; mouth 1.3 = the user's pick);
 # abs = human refs, LivePortrait's full expression set (lip/eye/brow corr 0.98/0.98/0.97).
+# Soft limits per region, (knee, max) on the norm of the region's expression change (gain applied): linear up to the
+# knee, then tanh-compressed towards max. Calibrated 2026-11-04 by sweeping a real driver's most extreme frame on
+# G-Star (assets/char_front.png): lips fine to 0.18, stretching at 0.24, torn at 0.31 (the "double mouth");
+# eyes shut cleanly at 0.075, squashed lids at 0.12; brows fine to 0.11, forehead/eyes distort at 0.17.
+# brow2 / rest are not calibrated (off in the gstar preset): conservative guesses.
+DEFAULT_LIMITS = {"lip": (0.14, 0.21), "eye": (0.07, 0.10), "brow": (0.10, 0.14), "brow2": (0.05, 0.08),
+                  "rest": (0.06, 0.10)}
+
 # Since 2026-11-03 the defaults are the user's live-tuned presets (presets.json): rel = "gstar", abs = "girl".
 PRESETS_FILE = Path(__file__).resolve().parent / "presets.json"
 
@@ -54,10 +62,14 @@ def load_presets():
     return json.loads(PRESETS_FILE.read_text()) if PRESETS_FILE.exists() else {}
 
 
-def save_preset(name, mode, gains, pose=False, note=""):
+def save_preset(name, mode, gains, pose=False, note="", limits=None, gates=None):
     import json
     p = load_presets()
     p[name] = {"mode": mode, "pose": bool(pose), "gains": dict(gains), "note": note}
+    if limits is not None:
+        p[name]["limits"] = {k: (list(v) if v else None) for k, v in limits.items()}
+    if gates is not None:
+        p[name]["gates"] = dict(gates)
     PRESETS_FILE.write_text(json.dumps(p, indent=2) + "\n")
 
 
@@ -110,11 +122,14 @@ class Face:
         # the wrapper launches on the stream it was built on (DET_STREAM): run it there; fence only that stream
         with DET_LOCK, torch.cuda.stream(DET_STREAM):
             faces = self.det.predict(bgr)
-            if len(faces) == 0:  # cartoon faces (G-Star close-up) score lower: retry at a lower threshold
+            if len(faces) == 0:  # cartoon faces score lower (char_front 0.3, the no-hat G-Star close-up 0.2): step down
                 th = self.det.det_thresh
-                self.det.det_thresh = 0.3
                 try:
-                    faces = self.det.predict(bgr)
+                    for t in (0.3, 0.2):
+                        self.det.det_thresh = t
+                        faces = self.det.predict(bgr)
+                        if len(faces):
+                            break
                 finally:
                     self.det.det_thresh = th
             DET_STREAM.synchronize()
@@ -195,16 +210,72 @@ class Face:
         return m
 
 
+class Visibility:
+    """Generic occlusion + 'turned away' signals for the driver frame (any occluder: hand, cup, mic, hair...).
+
+    - mouth_vis: a face-parsing net (BiSeNet, CelebAMask-HQ classes, FP16 TensorRT, 0.6 ms) labels the 512 px face
+      crop; the landmarks say where the mouth is even when it's hidden, so mouth_vis = fraction of the mouth's landmark
+      region (dilated) labelled lips or mouth interior. Calibrated 2026-11-04 on 3 people: normal frames >= 0.66
+      (pressed lips included), a covered mouth 0.0, glasses held over the mouth 0.32.
+      Not done for the eyes: the parser doesn't label eyes/brows reliably at webcam scale (normal frames read 0).
+    - face_score: RetinaFace's top anchor confidence (no NMS, ~2.5 ms): frontal 0.76-0.90, turned / profile
+      0.04-0.5. It does NOT drop for partial occlusion (detectors are trained to see through it).
+    Both are computed every `every` frames (default 2) and held in between: gating needs ~12 Hz, the GPU is busy.
+    """
+
+    def __init__(self, detector, stream, every=2):
+        self.det, self.stream, self.every = detector, stream, every
+        self.parse = Engine(ENG / "faceparse_fp16.engine", stream)
+        self.mean = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
+        self.std = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
+        self.n, self.last = 0, (1.0, 1.0)
+
+    def reset(self):
+        self.n, self.last = 0, (1.0, 1.0)
+
+    def face_score(self, bgr):
+        H, W = bgr.shape[:2]
+        r = min(512 / W, 512 / H)
+        im = cv2.resize(bgr, (int(W * r), int(H * r)))
+        canvas = np.zeros((512, 512, 3), np.uint8)
+        canvas[:im.shape[0], :im.shape[1]] = im
+        x = (cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB).transpose(2, 0, 1)[None].astype(np.float32) - 127.5) / 128.0
+        fd = self.det.face_det
+        with DET_LOCK, torch.cuda.stream(DET_STREAM):
+            out = fd.predict({fd.inputs[0]["name"]: torch.from_numpy(x).cuda()}, DET_STREAM.cuda_stream)
+            return max(float(out[k].max()) for k in ("448", "471", "494"))  # the three stride levels' score maps
+
+    def mouth_vis(self, bgr, lmk):
+        M, _ = _estimate_similar_transform_from_pts(lmk, dsize=512, scale=1.3, vy_ratio=-0.05)
+        crop = cv2.warpAffine(bgr, M, (512, 512), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        x = torch.from_numpy(crop[..., ::-1].copy()).cuda().permute(2, 0, 1)[None].float().div_(255)
+        lab = self.parse.run(input=(x - self.mean) / self.std)["out"].argmax(1)[0].byte().cpu().numpy()
+        m = np.zeros((512, 512), np.uint8)
+        cv2.fillConvexPoly(m, cv2.convexHull((lmk[48:106] @ M[:, :2].T + M[:, 2]).astype(np.int32)), 1)
+        m = cv2.dilate(m, np.ones((9, 9), np.uint8)) > 0
+        return float(np.isin(lab[m], (11, 12, 13)).mean()) if m.any() else 1.0
+
+    def __call__(self, bgr, lmk):
+        """-> (mouth_vis, face_score), refreshed every `every` frames."""
+        self.n += 1
+        if self.n % self.every == 1 or self.every <= 1:
+            self.last = (self.mouth_vis(bgr, lmk), self.face_score(bgr))
+        return self.last
+
+
 class Driver:
     """Webcam side: call `analyze(I)` when the frame is captured/sent; keep the result with the frame's seq."""
 
-    def __init__(self, detector):
+    def __init__(self, detector, visibility=True):
         self.face = Face(detector, retry=3)  # parallel thread: back off a little so it doesn't contend
         self.face.stable_crop = True  # the driver's mouth must not change its crop (scale / position)
+        self.vis = Visibility(detector, self.face.stream) if visibility else None
 
     def reset(self):
-        """Re-take the crop reference (call with LPPass neutral reset, or when a new person is in front)."""
+        """Re-take the crop reference and the visibility baseline (with the LPPass neutral reset / a new person)."""
         self.face.crop_ref = None
+        if self.vis is not None:
+            self.vis.reset()
 
     def analyze(self, bgr):
         with torch.cuda.stream(self.face.stream):  # own stream: overlaps with the render of the previous frame
@@ -217,13 +288,16 @@ class Driver:
         el, er = lmk[[0, 12]].mean(0), lmk[[24, 36]].mean(0)
         # head size from the inter-ocular distance (expression-independent; LivePortrait's own scale estimate moves
         # with the jaw and brows, which shrank the animated face when the mouth opened / brows went up)
-        return {"exp": m["exp"], "lmk": lmk, "R": m["R"], "iod": float(np.hypot(*(er - el)))}
+        return {"exp": m["exp"], "lmk": lmk, "R": m["R"], "iod": float(np.hypot(*(er - el))),
+                "yaw": float(m["yaw"]), "pitch": float(m["pitch"]),
+                **dict(zip(("mouth_vis", "face_score"), self.vis(bgr, lmk) if self.vis is not None else (1.0, 1.0)))}
 
 
 class LPPass:
     def __init__(self, mode="rel", gains=None, base_ema=0.08,
                  neutral_ema=0.01, fade=0.25, drv_smooth=0.0, yaw_gate=(30.0, 45.0), pitch_gate=(20.0, 35.0),
-                 pose=False):
+                 pose=False, limits=None, drv_yaw_gate=(25.0, 40.0), drv_pitch_gate=(18.0, 30.0), visibility=True,
+                 cover_gate=(0.55, 0.35), score_gate=(0.65, 0.5), cover_hold=6):
         global DET_STREAM
         DET_STREAM = DET_STREAM or torch.cuda.Stream()
         with torch.cuda.stream(DET_STREAM):  # the wrappers capture the current stream at construction
@@ -240,6 +314,13 @@ class LPPass:
         self.set_gain(**(gains or {}))
         self.base_ema, self.neutral_ema, self.fade, self.drv_smooth = base_ema, neutral_ema, fade, drv_smooth
         self.yaw_gate, self.pitch_gate = yaw_gate, pitch_gate
+        # driver gates: the speaker turned too far (yaw absolute, pitch relative to their usual pitch) or a hand over
+        # the face -> the effect fades out completely; after a cover it waits `cover_hold` clear frames
+        self.drv_yaw_gate, self.drv_pitch_gate, self.use_vis = drv_yaw_gate, drv_pitch_gate, visibility
+        self.cover_gate, self.score_gate = cover_gate, score_gate
+        self.cover_hold, self.clear_frames, self.pitch0, self.gate_info = cover_hold, 99, None, {}
+        self.limits = dict(DEFAULT_LIMITS)
+        self.set_limit(**(limits or {}))
         # pose=True (still-image sources): also transfer the driver's head rotation / shift / scale, relative to the
         # driver's first frame (LivePortrait image animation). Off for JoyAI output, which already moves the head.
         self.pose, self.drv0 = pose, None
@@ -259,7 +340,38 @@ class LPPass:
         self.pose = bool(p.get("pose", self.pose))
         self.drv0 = None
         self.gains = dict(DEFAULT_GAINS[self.mode])
+        self.limits = dict(DEFAULT_LIMITS)
+        self.set_limit(**{k: (tuple(v) if v else None) for k, v in p.get("limits", {}).items()})
+        if p.get("gates"):
+            self.set_gate(**p["gates"])
         return self.set_gain(**p.get("gains", {}))
+
+    def gates(self):
+        return {"drv_yaw": list(self.drv_yaw_gate), "drv_pitch": list(self.drv_pitch_gate), "cover": list(self.cover_gate),
+                "score": list(self.score_gate), "visibility": self.use_vis, "cover_hold": self.cover_hold,
+                "src_yaw": list(self.yaw_gate), "src_pitch": list(self.pitch_gate)}
+
+    def set_gate(self, **g):
+        """drv_yaw / drv_pitch / src_yaw / src_pitch = (start fading, fully off) in degrees; cover = (full, off) of the
+        mouth visibility (0..1, normal >= 0.66, covered ~0); score = (full, off) of the face confidence (frontal
+        0.76-0.9, turned away < 0.5); visibility = bool (only if the driver was built with it); cover_hold = clear
+        frames before the effect returns."""
+        for k, v in g.items():
+            if k in ("drv_yaw", "drv_pitch", "src_yaw", "src_pitch", "cover", "score"):
+                lo, hi = float(v[0]), float(v[1])
+                down = k in ("cover", "score")  # these fade out as the value DROPS
+                if (hi >= lo) if down else (hi <= lo):
+                    raise ValueError(f"{k}: need {'full > off' if down else 'start < off'}, got {lo} {hi}")
+                setattr(self, {"drv_yaw": "drv_yaw_gate", "drv_pitch": "drv_pitch_gate", "src_yaw": "yaw_gate",
+                               "src_pitch": "pitch_gate", "cover": "cover_gate", "score": "score_gate"}[k], (lo, hi))
+            elif k in ("visibility", "hands"):
+                self.use_vis = bool(v)
+            elif k == "cover_hold":
+                self.cover_hold = int(v)
+            else:
+                raise ValueError(f"unknown gate {k!r}; use drv_yaw, drv_pitch, cover, score, src_yaw, src_pitch, "
+                                 "visibility, cover_hold")
+        return self.gates()
 
     def set_gain(self, **g):
         """Per-region motion gain (lip / eye / brow / brow2 / rest; `all` scales every region). 0 = JoyAI's own
@@ -279,6 +391,55 @@ class LPPass:
         self.W, self.Wm = W, (W != 0).float()  # swapped atomically (render reads self.W once per frame)
         return dict(self.gains)
 
+    def set_limit(self, **lim):
+        """Soft limits per region: value = (knee, max) or a single max (knee = 2/3 max); None/0 = unlimited."""
+        for k, v in lim.items():
+            if k not in REGIONS:
+                raise ValueError(f"unknown region {k!r}; use {sorted(REGIONS)}")
+            if not v:
+                self.limits[k] = None
+            elif isinstance(v, (tuple, list)):
+                self.limits[k] = (float(v[0]), float(v[1]))
+            else:
+                self.limits[k] = (2.0 * float(v) / 3.0, float(v))
+        masks = []
+        for name, kps in REGIONS.items():
+            if self.limits.get(name):
+                M = torch.zeros(1, 21, 3, device="cuda")
+                for k, axes in kps:
+                    M[0, k, list(axes)] = 1.0
+                masks.append((M, *self.limits[name]))
+        self._limit_masks = masks
+        return dict(self.limits)
+
+    def _soft_limit(self, D):
+        """Compress each region's expression change D (1x21x3) past its knee (tanh), never beyond its max."""
+        for M, knee, mx in self._limit_masks:
+            n = (D * M).norm()
+            if float(n) > knee:
+                f = (knee + (mx - knee) * torch.tanh((n - knee) / (mx - knee))) / n
+                D = D * (1 - M) + D * M * f
+        return D
+
+    def _driver_gate(self, drv):
+        """0..1 from the speaker's face: turned too far, or covered by a hand."""
+        ramp = lambda v, g: min(1.0, max(0.0, (g[1] - v) / (g[1] - g[0])))  # noqa: E731
+        self.pitch0 = drv["pitch"] if self.pitch0 is None else self.pitch0 + 0.01 * (drv["pitch"] - self.pitch0)
+        g_pose = min(ramp(abs(drv["yaw"]), self.drv_yaw_gate), ramp(abs(drv["pitch"] - self.pitch0),
+                                                                        self.drv_pitch_gate))
+        mv = drv.get("mouth_vis", 1.0) if self.use_vis else 1.0
+        fs = drv.get("face_score", 1.0) if self.use_vis else 1.0
+        c0, c1 = self.cover_gate                    # mouth visibility: full above c0, off below c1, + hold after
+        g_cov = min(1.0, max(0.0, (mv - c1) / (c0 - c1)))
+        self.clear_frames = 0 if g_cov < 1 else self.clear_frames + 1
+        g_cover = g_cov if self.clear_frames >= self.cover_hold or g_cov < 1 else 0.0
+        s0, s1 = self.score_gate                   # face confidence: full above s0, off below s1 (turned away)
+        g_score = min(1.0, max(0.0, (fs - s1) / (s0 - s1)))
+        self.gate_info = {"drv_yaw": round(drv["yaw"], 1), "drv_pitch_rel": round(drv["pitch"] - self.pitch0, 1),
+                          "mouth_vis": round(mv, 2), "face_score": round(fs, 2), "g_pose": round(g_pose, 2),
+                          "g_cover": round(g_cover, 2), "g_score": round(g_score, 2)}
+        return min(g_pose, g_cover, g_score)
+
     def _warmup(self):
         """Run every engine once (first executions cost 50-120 ms: lazy TensorRT/CUDA init)."""
         with torch.cuda.stream(DET_STREAM):
@@ -294,16 +455,17 @@ class LPPass:
         torch.cuda.synchronize()
         if img is not None:  # full render path once (first use of each CUDA kernel is slow), then reset the state
             img = cv2.resize(img, (480, 640))
-            d = Driver(self.detector)
+            d = Driver(self.detector, visibility=False)
             for _ in range(3):
                 self.render(img, d.analyze(img))
             torch.cuda.synchronize()
             self.src.lmk, self.src.lost, self.src.detections = None, 0, 0
-            self.base_out = self.neutral_in = self.exp_in = self.pose_s = self.drv0 = None
+            self.base_out = self.neutral_in = self.exp_in = self.pose_s = self.drv0 = self.pitch0 = None
+            self.clear_frames, self.gate_info = 99, {}
             self.w, self.timing = 0.0, {}
 
     def driver(self):
-        d = Driver(self.detector)
+        d = Driver(self.detector, visibility=self.use_vis)
         for e in (d.face.lm, d.face.me):
             e.run(**{n: torch.zeros_like(e.buf[n]) for n in e.inputs})
         torch.cuda.synchronize()
@@ -340,10 +502,11 @@ class LPPass:
                 tuple(0.6 * p + 0.4 * v for p, v in zip(self.pose_s, (yaw, pitch)))  # no flicker at the threshold
             yaw, pitch = self.pose_s
             ramp = lambda v, g: min(1.0, max(0.0, (g[1] - v) / (g[1] - g[0])))  # noqa: E731
-            target = min(ramp(yaw, self.yaw_gate), ramp(pitch, self.pitch_gate))
-        self.w = min(target, self.w + self.fade) if target > self.w else max(target, self.w - self.fade)
+            target = min(ramp(yaw, self.yaw_gate), ramp(pitch, self.pitch_gate), self._driver_gate(drv))
+        fade_out = 2 * self.fade if self.gate_info.get("g_cover", 1.0) < 1 else self.fade  # covers: drop fast
+        self.w = min(target, self.w + self.fade) if target > self.w else max(target, self.w - fade_out)
         ok = ok and self.w > 0
-        info = {"ok": ok, "w": self.w}
+        info = {"ok": ok, "w": self.w, **self.gate_info}
         if not ok:  # no face on one side: pass JoyAI through
             return out_bgr, info
         t0 = self._t("src", t0, profile)
@@ -356,9 +519,9 @@ class LPPass:
         self.neutral_in = e_in.clone() if self.neutral_in is None else self.neutral_in.lerp_(e_in, self.neutral_ema)
         W, Wm = self.W, self.Wm
         if self.mode == "abs":  # blend towards the driver's expression
-            exp = s["exp"] + W * (e_in - s["exp"])
+            exp = s["exp"] + self._soft_limit(W * (e_in - s["exp"]))
         else:  # character's resting expression + scaled driver motion; gain-0 regions keep JoyAI's own expression
-            exp = s["exp"] * (1 - Wm) + Wm * (self.base_out + W * (e_in - self.neutral_in))
+            exp = s["exp"] * (1 - Wm) + Wm * (self.base_out + self._soft_limit(W * (e_in - self.neutral_in)))
         R = rot_matrix(s["pitch"], s["yaw"], s["roll"])
         sc, t, kp = s["scale"][..., None], s["t"], s["kp"]
         x_s = (kp @ R + s["exp"]) * sc
@@ -367,7 +530,7 @@ class LPPass:
             if self.drv0 is None:
                 self.drv0 = {"R": drv["R"].clone(), "iod": drv["iod"]}
             d0 = self.drv0
-            R_d = drv["R"] @ d0["R"].transpose(1, 2) @ R
+            R_d = drv["R"] @ d0["R"].transpose(1, 2) @ R  # (big turns are gated out above)
             sc_d = sc * min(1.5, max(0.67, drv["iod"] / d0["iod"]))
             t_d = t  # head translation isn't transferred (stitching cancels it; the character stays in place)
             x_d = (kp @ R_d + exp) * sc_d

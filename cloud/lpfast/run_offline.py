@@ -121,7 +121,7 @@ def main():
     pool = ThreadPoolExecutor(1)  # live: the driver frame is analysed when it is sent, in parallel
     H, W = outs[0].shape[:2]
     w_lp, w_rv = Writer(dst / "lp.mp4", W, H, a.fps), Writer(dst / "review.mp4", 3 * W, H, a.fps)
-    times, oks = [], 0
+    times, oks, gstats = [], 0, []
     pick = lambda s: ins[min(len(ins) - 1, max(0, s - 1))]  # noqa: E731  output k was made from input seq[k]-1
     fut = pool.submit(drv.analyze, pick(seq[0]))
     t_start = time.perf_counter()
@@ -136,6 +136,8 @@ def main():
         if times[-1] > 50 and k > 5:
             print(f"slow frame {k}: {times[-1]:.0f} ms, det_out {lp.src.detections}, det_in {drv.face.detections}")
         oks += info["ok"]
+        gstats.append((k, info.get("covered", 0.0), info.get("g_cover", 1.0), info.get("g_pose", 1.0),
+                       info.get("g_score", 1.0)))
         w_lp.write(r)
         w_rv.write(np.hstack([label(i, f"input {s}"), label(o, "JoyAI"), label(r, f"LP {a.mode} w={info['w']:.2f}")]))
     wall = time.perf_counter() - t_start
@@ -145,7 +147,11 @@ def main():
     res = {"frames": len(outs), "faces_ok": oks / len(outs), "ms_mean": float(t.mean()), "ms_p50": float(np.median(t)),
            "ms_p95": float(np.percentile(t, 95)), "ms_max": float(t.max()),
            "detections_out": lp.src.detections, "detections_in": drv.face.detections,
-           "wall_fps_incl_io": len(outs) / wall, "stage_ms": {k: round(v, 2) for k, v in lp.timing.items()},
+           "wall_fps_incl_io": len(outs) / wall,
+           "gates": {"cover_gated_frames": int(sum(g[2] < 1 for g in gstats)),
+                     "pose_gated_frames": int(sum(g[3] < 1 for g in gstats)),
+                     "turned_away_gated_frames": int(sum(g[4] < 1 for g in gstats)),
+                     "cover_gated_at": [g[0] for g in gstats if g[2] < 1][:40]}, "stage_ms": {k: round(v, 2) for k, v in lp.timing.items()},
            "args": vars(a)}
     (dst / "timing.json").write_text(json.dumps(res, indent=1))
     print(json.dumps({k: v for k, v in res.items() if k != "args"}))

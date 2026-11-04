@@ -22,13 +22,34 @@ Type in the terminal + Enter while it runs:
 | `/gain` | show the current gains |
 | `/preset girl` / `/preset` | switch to a saved preset (mode, gains, pose) / list presets |
 | `/save NAME` | save the current mode + gains + pose as preset NAME (`presets.json`; commit it to keep it) |
+| `/limit lip 0.25` / `/limit lip 0.14:0.21` / `/limit lip off` / `/limit` | soft limit of a region's motion (max, or knee:max) / show |
+| `/gate yaw 25 40` / `/gate pitch 18 30` | your head turned / tilted too far: effect fades out from the first to the second angle |
+| `/gate cover 0.55 0.35` | mouth covered (hand, mic, cup...): fades out as mouth visibility drops from 0.55 to 0.35 |
+| `/gate score 0.65 0.5` | face confidence (turned away / profile): fades out from 0.65 down to 0.5 |
+| `/gate hold 6` / `/gate visibility off` / `/gate` | frames to wait after a cover / disable the occlusion+confidence gates / show |
 | `/reset` | re-take your neutral face and head reference (after moving / changing seat) |
 | `q` | quit |
 
 `live_test.py` flags: `--preset`, `--gains lip=..,eye=..` (on top of the preset), `--mode rel|abs`, `--pose on|off`
 (head rotation + size from the driver; default on for an image source, off for a video), `--smooth 0..0.9` (calmer,
 laggier driver), `--neutral-ema` (how fast your neutral face re-adapts, 0.01 ≈ 4 s, 0 = first frame),
-`--crop x0,y0,x1,y1` (fractions), `--layout 1|3`, `--save out.mp4`, `--driver auto|VIDEO`, `--camera /dev/video0`.
+`--crop x0,y0,x1,y1` (fractions), `--layout 1|3`, `--save out.mp4`, `--driver auto|VIDEO`, `--camera /dev/video0`,
+`--limits lip=0.21,eye=0.10` (or `lip=0.14:0.21`, `lip=off`), `--no-visibility`. Default source: the G-Star test image
+`assets/g-star-screenshot-no-hat.png`. `/save` stores limits and gates in the preset too.
+
+### Limits and gates (2026-11-04)
+- **Soft limits** (`lp_pass.DEFAULT_LIMITS`, per region `(knee, max)` on the size of the expression change after the
+  gain): linear up to the knee, then tanh-compressed, never past max. Calibrated by sweeping a real driver's most
+  extreme frame on G-Star: lips fine to 0.18, stretched at 0.24, torn ("double mouth") at 0.31 -> `lip (0.14, 0.21)`;
+  eyes shut cleanly at 0.075, squashed at 0.12 -> `eye (0.07, 0.10)`; brows distort at 0.17 -> `brow (0.10, 0.14)`;
+  `brow2`/`rest` uncalibrated guesses. With the limit, x3.5 / x5 lip motion renders as a big clean open mouth.
+- **Drop completely** (the effect fades out, JoyAI's frame plays): no face; your head yaw 25->40 deg or pitch (relative
+  to your usual) 18->30 deg; the generated face's own pose 30->45 / 20->35 deg; **mouth covered**: a face-parsing net
+  (BiSeNet, FP16 TensorRT, 0.6 ms) checks how much of your mouth's landmark region is lips / mouth (normal >= 0.66,
+  covered 0, glasses held over the mouth 0.32); **turned away**: RetinaFace confidence (frontal 0.76-0.90, profile
+  0.04-0.5). Face confidence does not drop for partial occlusion, hence the parser. After a cover the effect waits
+  6 clear frames. Both checks run every 2nd frame in the driver thread (render stays at 36 ms mean / 39 p95).
+- Not covered yet: a hand over the **eyes only** (the parser doesn't label eyes/brows reliably at webcam scale).
 
 ### Presets (`presets.json`, tuned live by the user 2026-11-03; also the defaults of each mode)
 | Preset | Mode | Pose | lip | eye | brow | brow2 | rest |
@@ -132,6 +153,7 @@ Disk: TensorRT 11 libs ~6.3 GB in the venv, ONNX ~0.7 GB, engines ~0.6 GB.
 
 ## Open / next
 - Still image + large head turns: a pale smear at the cone's edge (disocclusion), a LivePortrait limit.
-- A hand directly over the mouth isn't in any recording (hands at the face edge are fine); no hand gate yet.
+- Eye-only occlusion isn't detected (see Limits and gates); the mouth-cover gate is tested on synthetic covers and one
+  real clip (glasses held over the mouth), not yet on your webcam.
 - Not yet run against the real 5090 server (validated through the bridge with `cloud/facefix/mock_server.py`
   replaying a recorded 5090 run at its chunk rhythm).

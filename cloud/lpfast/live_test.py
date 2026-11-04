@@ -23,7 +23,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-DEFAULT_SRC = HERE.parent / "pipelines" / "joyai" / "experiments" / "2026-11-02-joyai-5090" / "arms.mp4"
+DEFAULT_SRC = HERE.parents[1] / "assets" / "g-star-screenshot-no-hat.png"  # the G-Star test image (2026-11-04)
 
 
 class Camera:
@@ -79,6 +79,9 @@ def main():
                    "sets mode, gains and pose; --mode/--gains/--pose given explicitly override it")
     p.add_argument("--mode", default=None, choices=["rel", "abs"])
     p.add_argument("--gains", default="")
+    p.add_argument("--limits", default="", help="soft limits per region, e.g. lip=0.21,eye=0.1 (max; knee = 2/3) or "
+                   "lip=0.14:0.21 (knee:max), lip=off; defaults calibrated on G-Star (lp_pass.DEFAULT_LIMITS)")
+    p.add_argument("--no-visibility", action="store_true", help="don't run the occlusion / turned-away gates")
     p.add_argument("--smooth", type=float, default=0.0, help="driver expression smoothing 0..0.9 (higher = calmer, "
                    "laggier)")
     p.add_argument("--neutral-ema", type=float, default=0.01, help="rel: how fast your 'neutral face' baseline adapts "
@@ -115,8 +118,19 @@ def main():
     a.mode = a.mode or pre.get("mode", "rel")
     gains = dict(pre.get("gains", {})) | {k: float(v) for k, v in (x.split("=") for x in a.gains.split(",") if x)}
     pose = (a.pose == "on") if a.pose else bool(pre.get("pose", is_image))
+    def parse_limits(text):
+        out = {}
+        for part in text.replace(" ", "").split(","):
+            if not part:
+                continue
+            k, v = part.split("=")
+            out[k] = None if v in ("off", "0", "none") else (tuple(float(x) for x in v.split(":")) if ":" in v else float(v))
+        return out
+    limits = {k: (tuple(v) if v else None) for k, v in pre.get("limits", {}).items()} | parse_limits(a.limits)
     lp = LPPass(mode=a.mode, gains=gains, pose=pose, drv_smooth=a.smooth, neutral_ema=a.neutral_ema,
-                base_ema=a.base_ema)
+                base_ema=a.base_ema, limits=limits, visibility=not a.no_visibility)
+    if pre.get("gates"):
+        lp.set_gate(**{k: v for k, v in pre["gates"].items() if not (k in ("hands", "visibility") and a.no_visibility)})
     print(f"[live] source {Path(a.source).name} {W}x{H}{' (image)' if is_image else ''}, head pose transfer "
           f"{'on' if pose else 'off'}", flush=True)
     drv = lp.driver()
@@ -153,7 +167,8 @@ def main():
 
     def commands():
         print(f"[live] gains {lp.gains}. Type '/gain <lip|eye|brow|brow2|rest|all> <v>', '/gain', '/reset' "
-              "(re-take your neutral face), '/preset [name]', '/save <name>' or 'q' + Enter",
+              "(re-take your neutral face), '/limit [region max|off]', '/gate [yaw|pitch a b | hands on|off | hold n]', "
+              "'/preset [name]', '/save <name>' or 'q' + Enter",
               flush=True)
         for line in sys.stdin:
             line = line.strip()
@@ -170,12 +185,41 @@ def main():
                 except ValueError as e:
                     print(f"[live] {e}", flush=True)
                 continue
+            if line.startswith("/limit"):
+                parts = line.split()
+                try:
+                    if len(parts) == 3:
+                        v = parts[2]
+                        lp.set_limit(**{parts[1]: None if v in ("off", "0") else (
+                            tuple(float(x) for x in v.split(":")) if ":" in v else float(v))})
+                    elif len(parts) != 1:
+                        raise ValueError("usage: /limit <region> <max | knee:max | off>")
+                    print(f"[live] limits {lp.limits}", flush=True)
+                except ValueError as e:
+                    print(f"[live] {e}", flush=True)
+                continue
+            if line.startswith("/gate"):
+                parts = line.split()
+                try:
+                    if len(parts) >= 3:
+                        k = {"yaw": "drv_yaw", "pitch": "drv_pitch"}.get(parts[1], parts[1])
+                        v = parts[2:]
+                        val = (v[0] in ("on", "1", "true")) if k in ("visibility", "hands") else (int(v[0]) if k in ("cover_hold", "hold") else (float(v[0]), float(v[1])))
+                        lp.set_gate(**{("cover_hold" if k == "hold" else k): val})
+                    elif len(parts) != 1:
+                        raise ValueError("usage: /gate yaw|pitch|src_yaw|src_pitch <start> <off> | cover|score <full> <off> | "
+                                         "visibility on|off | hold <frames>")
+                    print(f"[live] gates {lp.gates()}", flush=True)
+                except (ValueError, IndexError) as e:
+                    print(f"[live] {e}", flush=True)
+                continue
             if line.startswith("/save"):
                 parts = line.split()
                 if len(parts) != 2:
                     print("[live] usage: /save <name>", flush=True)
                     continue
-                save_preset(parts[1], lp.mode, lp.gains, lp.pose, note=f"saved from live_test {time.strftime('%F %T')}")
+                save_preset(parts[1], lp.mode, lp.gains, lp.pose, note=f"saved from live_test {time.strftime('%F %T')}",
+                            limits=lp.limits, gates=lp.gates())
                 print(f"[live] saved preset {parts[1]!r}: mode {lp.mode}, pose {'on' if lp.pose else 'off'}, "
                       f"gains {lp.gains} -> {Path(__file__).resolve().parent / 'presets.json'}", flush=True)
                 continue
@@ -228,7 +272,7 @@ def main():
             r, info = lp.render(o, d)
             ms.append((time.perf_counter() - t) * 1000)
             frame = np.hstack([label(c_now.copy(), "driver"), label(o.copy(), "source"),
-                               label(r.copy(), f"face pass {lp.mode} w={info['w']:.2f}")]) if a.layout == 3 else r
+                               label(r.copy(), f"{lp.mode} w={info['w']:.2f}" + (f" yaw {info.get('drv_yaw')} mouth {info.get('mouth_vis')} conf {info.get('face_score')}" if 'drv_yaw' in info else ""))]) if a.layout == 3 else r
             try:
                 outq.put_nowait(frame)
             except queue.Full:
