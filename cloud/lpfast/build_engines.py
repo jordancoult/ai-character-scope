@@ -20,7 +20,7 @@ import tensorrt as trt
 HERE = Path(__file__).resolve().parent
 SRC = HERE / "checkpoints" / "liveportrait_onnx"
 DST = HERE / "checkpoints" / "trt"
-MODELS = ["warping_spade", "appearance_feature_extractor", "motion_extractor", "stitching", "stitching_eye",
+MODELS = ["faceparse", "warping_spade", "appearance_feature_extractor", "motion_extractor", "stitching", "stitching_eye",
           "stitching_lip", "landmark", "retinaface_det_static", "face_2dpose_106_static"]
 
 
@@ -61,8 +61,28 @@ def fp16_warping():
     return out
 
 
+def faceparse_onnx():
+    """BiSeNet face parsing (CelebAMask-HQ 19 classes) for the mouth-cover gate: HF bluefoxcreation/Face_parsing_onnx,
+    main output only, FP16 (0.6 ms on the RTX 5080 Laptop)."""
+    out = DST / "faceparse_fp16.onnx"
+    if not out.exists():
+        from huggingface_hub import hf_hub_download
+        from onnxconverter_common import float16
+        p = hf_hub_download("bluefoxcreation/Face_parsing_onnx", "faceparser.onnx",
+                            local_dir=str(HERE / "checkpoints" / "faceparse"), token=False)
+        m = onnx.load(p)
+        keep = [o for o in m.graph.output if o.name == "out"]
+        del m.graph.output[:]
+        m.graph.output.extend(keep)
+        onnx.save(float16.convert_float_to_float16(m, keep_io_types=True, op_block_list=["Softmax", "ReduceMean",
+                                                                                         "Sigmoid"]), out)
+    return out
+
+
 def build(name, fp16, workspace_gb=4):
-    if name == "warping_spade":
+    if name == "faceparse":
+        onnx_path, eng_path = faceparse_onnx(), DST / "faceparse_fp16.engine"
+    elif name == "warping_spade":
         onnx_path, eng_path = (fp16_warping(), DST / "warping_fp16.engine") if fp16 else \
             (patched_warping(), DST / "warping_spade_fp32.engine")
     else:  # small models: FP32 (each 0.2-3 ms)
