@@ -36,6 +36,6 @@ for x in o[:15]:
   show)       $V --api-key "$KEY" show instances ;;
   stop)       $V --api-key "$KEY" stop instance "$2" ;;
   start)      $V --api-key "$KEY" start instance "$2" ;;
-  destroy)    $V --api-key "$KEY" destroy instance "$2" ;;
+  destroy)    echo y | $V --api-key "$KEY" destroy instance "$2" ;;   # the CLI asks for confirmation
   *) sed -n 2,8p "$0" ;;
 esac

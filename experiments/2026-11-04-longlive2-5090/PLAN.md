@@ -1,4 +1,4 @@
-# LongLive 2.0 on an RTX 5090: plan, state, progress (living doc; update as you go)
+# LongLive 2.0 on an RTX 5090: plan, state, progress — DONE 2026-11-04 (instance destroyed)
 
 ## Goals (user, 2026-11-04 night; user asleep, autonomous)
 1. Set up **LongLive 2.0** (NVlabs, Wan2.2-TI2V-5B, NVFP4) on a rented **RTX 5090**.
@@ -59,4 +59,4 @@
 - [x] Demos: T2V prompt changes, ref image → person video, webcam v2v morph (use assets/ clips, not the webcam)
 - [x] Stretch (partial, see FINDINGS §4): directional prompts / SCOPE; spatial-noise interaction
 - [x] Docs: `tools/longlive2/README.md` (toolbox entry), FINDINGS.md here; HF upload of compile caches if useful
-- [ ] Destroy the instance; final report with spend and demo links
+- [x] Destroy the instance (destroyed 2026-11-04 ~06:05 UTC; 2.3 h at $0.753/h incl. storage ≈ $1.75); final report sent
