@@ -31,6 +31,8 @@ else                                 # RTX 5090 / 32 GB class
   export JOYOMNI_SAGE_ATTN=${JOYOMNI_SAGE_ATTN:-1} JOYOMNI_FP8_FAST_ACCUM=${JOYOMNI_FP8_FAST_ACCUM:-1} JOYOMNI_LOW_VRAM=${JOYOMNI_LOW_VRAM:-1}
 fi
 echo "[run_server] $GPU: sage=$JOYOMNI_SAGE_ATTN fast_accum=$JOYOMNI_FP8_FAST_ACCUM low_vram=$JOYOMNI_LOW_VRAM"
+# prompt enhancer: we run with use_pe=false; upstream (>= 4dd4dda) otherwise loads a local Qwen3.5-35B PE at start
+export JOYOMNI_PE_BACKEND=${JOYOMNI_PE_BACKEND:-api}
 export JOYOMNI_RECORD_DIR=${JOYOMNI_RECORD_DIR:-$W/recordings}
 export HF_HOME=$W/hf_cache
 # face++ checkpoint (2026-11-01): better human identity + motion following than 0811 in our tests

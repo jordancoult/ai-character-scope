@@ -20,9 +20,23 @@ own clients.
 | `run_server.sh` | Starts the server: per-GPU settings, face++ checkpoint, compile cache restored from `$JOYAI_DATA/cache/<GPU>.tar` |
 | `save_cache.sh` | After the first warm start on a new GPU model: packs the compile cache into one tar |
 | `publish_artifacts.sh` | Uploads wheels + cache tars to `JordanCo/ai-livestream-artifacts` (needs a write token) |
+| `serverpatch/` | Explicit patches applied at start (`patch_server.py`): no YOLO body gate outside full-body detection; **runtime LoRA** (`runtime_lora.py`, off unless `JOYAI_LORA` is set) |
 | `prompts/` | Working prompts (G-Star, human) |
 | `webui/` | Our additions to the upstream browser demo, injected at start (`patch_webui.sh`): a **memory panel** with a **Reset (R)** key/button (fresh temporal memory without restarting the camera), a since-reset timer and the auto-reset interval (default 0 = never, for drift tests; upstream hides it at 600 frames ≈ 25 s) |
 | `experiments/` | Dated runs with FINDINGS.md (videos are gitignored) |
+
+## G-Star detail LoRA (optional, off by default)
+Adapters from `training/` (better G-Star skin/hat detail; mouth unchanged; `cloud/docs/gstar-lora-finetune.md`).
+Applied at runtime next to the FP8/bf16 linears (merging would lose it):
+```bash
+/root/venv/bin/hf download JordanCo/joyai-gstar-lora adapters/r3_step50.pt --local-dir /workspace/lora   # private
+JOYAI_LORA=/workspace/lora/adapters/r3_step50.pt JOYAI_LORA_SCALE=1.0 bash run_server.sh
+```
+The log shows `#####[runtime_lora] ... 320 FP8 + 0 bf16 linears hooked`. Speed cost on the 5090 (same box,
+2026-11-04): base 0.319 s per 8-frame chunk (25 fps) · full LoRA 0.38 s (~21 fps) · `JOYAI_LORA_MODULES=attn_qkv,attn_proj`
+0.352 s (22.7 fps). The hooks re-read each layer's bf16 input next to the memory-bound FP8 GEMM; a fused kernel would
+be needed to make it free. Run the bridge with `--fps`/`--play-fps` near the server rate. About 65% of the LoRA's
+change survives the bf16 add (vs ~30% merged into bf16, ~7% merged into FP8).
 
 ## Recipe (what works)
 - **Reference:** a full-body character image on a plain background (`assets/char_front.png`). An upper-body
