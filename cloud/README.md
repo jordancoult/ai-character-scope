@@ -16,6 +16,7 @@ experiments/), keep it provider-independent, and add a row here.
 |---|---|
 | `pipelines/<name>/` | setup + launcher + recipe + experiments for one model |
 | `client/live_bridge.py` | **The live path**: camera (or a clip) → GPU machine over H.264 WebSocket → adaptive jitter-buffer playout → v4l2loopback (`/dev/video10`, OBS) or mp4 |
+| `client/dashboard.py` | **Control page** for the bridge (`--dashboard 8765` → http://127.0.0.1:8765): live views (webcam / JoyAI / after lpfast), prompt, memory reset, reference image (assets or upload), portrait/landscape, lpfast on/off + preset + gains, rates, session options |
 | `client/joyai_client.py` | Benchmark client: simulated webcam, records output, reports fps + per-frame latency |
 | `client/sbs.sh` | input / output / reference review video + contact sheet |
 | `lpfast/` | **Laptop-GPU face pass (current)**: FasterLivePortrait on TensorRT 11 / RTX 5080 (sm_120), the generated face's mouth + eyes follow the real face; G-Star lip-gap 0.03 → 0.8, human ref 0.25 → 0.98; 34 ms/frame, 0 added latency; `live_bridge.py --facefix rel\|abs` |

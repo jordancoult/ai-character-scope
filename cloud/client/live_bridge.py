@@ -9,6 +9,7 @@ drops the oldest frames when the queue grows past `--max-buffer` (keeps latency 
       --ref assets/char_front.png --prompt "..." --portrait
   python live_bridge.py --input assets/webcam_5941016.mp4 --output test.mp4 --seconds 30 ...   # no camera
   python live_bridge.py ... --output ffplay                    # watch in an ffplay window
+  python live_bridge.py ... --dashboard 8765                   # control page + live views: http://127.0.0.1:8765
 
 Optional face pass on the local GPU (off by default; run with cloud/facefix/.venv/bin/python, see
 cloud/lpfast/README.md): --facefix rel (cartoon refs like G-Star) | abs (human refs). LivePortrait (TensorRT, ~34 ms
@@ -71,6 +72,8 @@ p.add_argument("--facefix-hold", type=int, default=2, help="on a miss, repeat th
                "most this many frames old (instead of popping to the raw frame)")
 p.add_argument("--facefix-extra", default="", help="more facefix.py flags, e.g. '--yaw-hi 45 --no-hands'")
 p.add_argument("--review", default=None, help="also write input | JoyAI | played (facefix) as an mp4 (<=1920 wide)")
+p.add_argument("--dashboard", type=int, default=0, help="serve a local control page on this port (e.g. 8765): "
+               "prompt, memory reset, reference image, portrait/landscape, face-pass gains, rates (cloud/client/dashboard.py)")
 p.add_argument("--save-input", default=None, help="write the frames as sent (generation size) to this mp4 and "
                "<name>.json with source_seq per played frame (for client/mouth_sync.py)")
 args = p.parse_args()
@@ -345,22 +348,27 @@ async def main():
         print(f"[bridge] session started {w}x{h}; {args.input} -> {args.output}")
         def new_enc():
             e = av.CodecContext.create("libx264", "w")
-            e.width, e.height, e.pix_fmt = w, h, "yuv420p"
+            e.width, e.height, e.pix_fmt = sess["w"], sess["h"], "yuv420p"
             e.options = {"preset": "veryfast", "tune": "zerolatency", "crf": str(args.crf), "g": "16",
                          "x264-params": "scenecut=0:repeat-headers=1:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=tv"}
             e.open()
             return e
         # mutable session state: a prompt change restarts the server session (fresh encoder/decoder, ack counter)
-        sess = {"enc": new_enc(), "dec": av.CodecContext.create("h264", "r"), "new_enc": False}
-        sink = Sink(args.output, w, h)
+        sess = {"w": w, "h": h, "dec": av.CodecContext.create("h264", "r"), "new_enc": False, "ff_on": ff is not None,
+                "ref_name": args.ref, "state": "running", "last_msg": ""}
+        sess["enc"] = new_enc()
+        sess["sink"], sess["sink_wh"] = Sink(args.output, w, h), (w, h)
         review = FileWriter(args.review, 3 * w, h, args.play_fps) if args.review else None
+        sess["review"] = review
+        recv_times = collections.deque(maxlen=200)
+        views = {}                                       # dashboard live views: latest input / JoyAI / final frame
         saved_in = FileWriter(args.save_input, w, h, args.fps) if args.save_input else None
         played_seq, played_ff = [], []
         sent_cache = collections.OrderedDict()           # seq -> frame as sent (for --review)
         received = 0
 
         async def sender():
-            seq, t0 = 0, time.time()
+            seq, next_send = 0, time.time()
             while not stop.is_set():
                 if t_end and time.time() > t_end:
                     stop.set()
@@ -369,10 +377,11 @@ async def main():
                 if frame is None:
                     await asyncio.sleep(0.005)
                     continue
-                frame = crop_resize(frame, w, h)
+                frame = crop_resize(frame, sess["w"], sess["h"])
+                views["input"] = frame
                 if ff is not None:
                     ff.add_input(seq + 1, frame)
-                if review is not None:
+                if sess["review"] is not None:
                     sent_cache[seq + 1] = frame
                     while len(sent_cache) > 300:
                         sent_cache.popitem(last=False)
@@ -386,7 +395,8 @@ async def main():
                 seq += 1
                 await ws.send(json.dumps({"type": "frame_meta", "seq": seq, "t_capture_ms": time.time() * 1000}))
                 await ws.send(data)
-                await asyncio.sleep(max(0.0, t0 + seq / args.fps - time.time()))
+                next_send = max(next_send + 1.0 / args.fps, time.time() - 0.2)
+                await asyncio.sleep(max(0.0, next_send - time.time()))
 
         async def receiver():
             nonlocal received
@@ -400,10 +410,21 @@ async def main():
                     j = json.loads(m)
                     if j.get("type") == "output_frame":
                         meta = j
-                    elif j.get("type") == "started":  # after a prompt change / reset
+                    elif j.get("type") == "started":  # after a prompt change / reset / new size
                         received = 0
                         sess["dec"] = av.CodecContext.create("h264", "r")
-                        print("[bridge] session restarted", flush=True)
+                        nw, nh = j.get("width", sess["w"]), j.get("height", sess["h"])
+                        if (nw, nh) != sess["sink_wh"]:
+                            queue.clear()
+                            old = sess["sink"]
+                            sess["w"], sess["h"] = nw, nh
+                            sess["sink"], sess["sink_wh"] = Sink(args.output, nw, nh), (nw, nh)
+                            old.close()
+                            if sess["review"] is not None:   # the review file has a fixed size: stop it
+                                sess["review"].close()
+                                sess["review"] = None
+                        sess["state"] = "running"
+                        print(f"[bridge] session restarted ({nw}x{nh})", flush=True)
                     elif j.get("type") in ("error", "flow_drop", "session_reset", "no_person"):
                         stats[j["type"]] += 1
                     continue
@@ -412,6 +433,7 @@ async def main():
                 except av.error.InvalidDataError:
                     continue
                 received += 1
+                recv_times.append(time.time())
                 await ws.send(json.dumps({"type": "ack", "recv": received}))
                 for fr in frames:
                     img = fr.to_ndarray(format="bgr24")
@@ -424,60 +446,135 @@ async def main():
                         old[2]["cancel"] = True
                     stats["dropped"] += 1
 
-        async def commands():
-            """Type a new prompt + Enter to change it live; /r = reset memory (same prompt); /q = quit."""
-            if not sys.stdin or not sys.stdin.isatty():
-                return
-            loop = asyncio.get_running_loop()
-            q = asyncio.Queue()
-            import threading
+        ctl = asyncio.Queue()
+        loop = asyncio.get_running_loop()
 
-            def reader():
-                for line in sys.stdin:
-                    loop.call_soon_threadsafe(q.put_nowait, line.rstrip("\n"))
-            threading.Thread(target=reader, daemon=True).start()
-            print("[bridge] type a new prompt + Enter to change it; /r = reset memory; /q = quit"
-                  + ("; /gain <lip|eye|brow|all> <value> = face motion gain" if ff is not None else ""), flush=True)
+        def status():
+            l = sorted(lat[-250:])
+            rt = list(recv_times)
+            sfps = (len(rt) - 1) / (rt[-1] - rt[0]) if len(rt) > 20 and rt[-1] > rt[0] else 0.0
+            st = {"prompt": start["prompt"], "width": sess["w"], "height": sess["h"], "ref": sess["ref_name"],
+                  "state": sess["state"], "last_msg": sess["last_msg"], "fps": args.fps, "play_fps": args.play_fps,
+                  "buffer": args.buffer, "queue": len(queue), "played": stats["played"],
+                  "repeated": stats["repeated"], "dropped": stats["dropped"], "server_fps": round(sfps, 1),
+                  "g2g_ms": round(l[len(l) // 2]) if l else None,
+                  "session": {k: start.get(k) for k in ("kv_reset_frames", "freeze_kv_on_static", "detection_mode")},
+                  "facefix_available": ff is not None, "facefix_on": sess["ff_on"]}
+            if ff is not None:
+                ms = sorted(ff.ms)
+                tot = ff.stats["hit"] + ff.stats["miss"]
+                st.update(facefix_mode=ff.lp.mode, gains=dict(ff.lp.gains),
+                          facefix_hit=f"{ff.stats['hit']}/{tot}", facefix_ms=round(ms[len(ms) // 2]) if ms else None)
+            return st
+
+        def say(msg):
+            sess["last_msg"] = msg
+            print(f"[bridge] {msg}", flush=True)
+
+        async def restart_session(msg):
+            say(msg)
+            sess["state"] = "restarting"
+            sess["new_enc"] = True
+            await ws.send(json.dumps(start))
+
+        async def apply(cmd):
+            """One handler for terminal lines and dashboard commands (dashboard.py lists the commands)."""
+            if "quit" in cmd:
+                stop.set()
+                return
+            if "preset" in cmd or "gains" in cmd or "facefix" in cmd:
+                if ff is None:
+                    return say("no face pass in this run (start with --facefix-preset gstar)")
+                try:
+                    if "preset" in cmd:
+                        ff.lp.apply_preset(cmd["preset"])
+                    if cmd.get("gains"):
+                        ff.lp.set_gain(**{k: float(v) for k, v in cmd["gains"].items()})
+                    if "facefix" in cmd:
+                        sess["ff_on"] = bool(cmd["facefix"])
+                    say(f"face pass {'on' if sess['ff_on'] else 'off'}, mode {ff.lp.mode}, gains {ff.lp.gains}")
+                except ValueError as e:
+                    say(str(e))
+            for k, cast in (("fps", float), ("play_fps", float), ("buffer", int)):
+                if cmd.get(k):
+                    setattr(args, k, cast(cmd[k]))
+                    say(f"{k} = {getattr(args, k)}")
+            restart = None
+            if cmd.get("prompt"):
+                start["prompt"] = cmd["prompt"].strip()
+                restart = f"new prompt: {start['prompt'][:100]}"
+            if "ref" in cmd:
+                r = cmd["ref"]
+                if r in ("none", "", None):
+                    start.pop("ref_image", None)
+                    sess["ref_name"] = None
+                elif r.startswith("data:"):
+                    start["ref_image"] = r
+                    sess["ref_name"] = cmd.get("ref_name", "upload")
+                else:
+                    pth = Path(__file__).resolve().parents[2] / r
+                    if not pth.is_file():
+                        return say(f"no such image: {r}")
+                    start["ref_image"] = "data:image/png;base64," + base64.b64encode(pth.read_bytes()).decode()
+                    sess["ref_name"] = r
+                restart = f"reference image: {sess['ref_name'] or 'none'}"
+            if cmd.get("orientation") in ("portrait", "landscape"):
+                nw, nh = (480, 840) if cmd["orientation"] == "portrait" else (840, 480)
+                if (nw, nh) != (sess["w"], sess["h"]):
+                    start["width"], start["height"] = nw, nh
+                    sess["w"], sess["h"] = nw, nh   # send at the new size from the next frame (fresh encoder)
+                    restart = f"{cmd['orientation']} {nw}x{nh}"
+            if isinstance(cmd.get("session"), dict):
+                start.update(cmd["session"])
+                restart = f"session options {cmd['session']}"
+            if cmd.get("reset"):
+                restart = restart or "resetting memory"
+            if restart:
+                await restart_session(restart)
+
+        async def controller():
+            """Terminal: a new prompt + Enter changes it; /r = reset memory; /q = quit; /preset, /gain."""
+            if sys.stdin and sys.stdin.isatty():
+                def reader():
+                    for line in sys.stdin:
+                        loop.call_soon_threadsafe(ctl.put_nowait, line.rstrip("\n"))
+                threading.Thread(target=reader, daemon=True).start()
+                print("[bridge] type a new prompt + Enter to change it; /r = reset memory; /q = quit"
+                      + ("; /gain <lip|eye|brow|all> <value> = face motion gain" if ff is not None else ""), flush=True)
+            if args.dashboard:
+                import dashboard
+                dashboard.start(args.dashboard, lambda c: loop.call_soon_threadsafe(ctl.put_nowait, c), status, views)
             while not stop.is_set():
                 try:
-                    line = (await asyncio.wait_for(q.get(), timeout=0.5)).strip()
+                    item = await asyncio.wait_for(ctl.get(), timeout=0.5)
                 except asyncio.TimeoutError:
                     continue
+                if isinstance(item, dict):
+                    await apply(item)
+                    continue
+                line = item.strip()
                 if not line:
                     continue
+                parts = line.split()
                 if line in ("/q", "/quit"):
-                    stop.set()
-                    break
-                if line.startswith("/preset") and ff is not None:   # live face-pass preset switch
-                    parts = line.split()
-                    try:
-                        if len(parts) == 2:
-                            ff.lp.apply_preset(parts[1])
-                        print(f"[bridge] face preset mode {ff.lp.mode}, gains {ff.lp.gains}", flush=True)
-                    except ValueError as e:
-                        print(f"[bridge] {e}", flush=True)
-                    continue
-                if line.startswith("/gain"):                    # live face-pass gain: /gain [region|all] [value]
-                    if ff is None:
-                        print("[bridge] /gain needs --facefix rel|abs", flush=True)
-                        continue
-                    parts = line.split()
-                    try:
-                        if len(parts) == 3:
-                            ff.lp.set_gain(**{parts[1]: float(parts[2])})
-                        elif len(parts) != 1:
-                            raise ValueError("usage: /gain <lip|eye|brow|brow2|rest|all> <value>")
-                        print(f"[bridge] face gains {ff.lp.gains}", flush=True)
-                    except ValueError as e:
-                        print(f"[bridge] {e}", flush=True)
-                    continue
-                if line not in ("/r", "/reset"):
-                    start["prompt"] = line
-                    print(f"[bridge] new prompt: {line[:100]}", flush=True)
+                    await apply({"quit": True})
+                elif line.startswith("/preset"):
+                    if len(parts) == 2:
+                        await apply({"preset": parts[1]})
+                    elif ff is not None:
+                        say(f"face preset mode {ff.lp.mode}, gains {ff.lp.gains}")
+                elif line.startswith("/gain"):
+                    if len(parts) == 3:
+                        try:
+                            await apply({"gains": {parts[1]: float(parts[2])}})
+                        except ValueError:
+                            say("usage: /gain <lip|eye|brow|brow2|rest|all> <value>")
+                    elif ff is not None:
+                        say(f"face gains {ff.lp.gains}")
+                elif line in ("/r", "/reset"):
+                    await apply({"reset": True})
                 else:
-                    print("[bridge] resetting memory", flush=True)
-                sess["new_enc"] = True
-                await ws.send(json.dumps(start))
+                    await apply({"prompt": line})
 
         async def pinger():
             while not stop.is_set():
@@ -500,7 +597,10 @@ async def main():
                 if queue:
                     last_raw, tcap, job, last_seq = queue.popleft()
                     last = last_raw
-                    if ff is not None:
+                    if ff is not None and not sess["ff_on"]:
+                        if job is not None:
+                            job["cancel"] = True
+                    elif ff is not None:
                         if job is not None and not job["fut"].done():     # give the GPU a few ms
                             t_dead = time.time() + args.facefix_wait / 1000
                             while not job["fut"].done() and time.time() < t_dead:
@@ -518,13 +618,14 @@ async def main():
                     stats["played"] += 1
                 else:
                     stats["repeated"] += 1
-                if last is not None:
-                    sink.write(last)
+                if last is not None and last.shape[1::-1] == sess["sink_wh"]:
+                    sess["sink"].write(last)
+                    views["joyai"], views["final"] = last_raw, last
                     played_seq.append(last_seq)
                     played_ff.append(ff.last_info if ff is not None else None)   # None = raw frame (miss/off)
-                    if review is not None:
+                    if sess["review"] is not None:
                         inp = sent_cache.get(last_seq)
-                        review.write(np.hstack([inp if inp is not None else np.zeros_like(last), last_raw, last]))
+                        sess["review"].write(np.hstack([inp if inp is not None else np.zeros_like(last), last_raw, last]))
                 n += 1
                 # adaptive rate: keep the queue near the target (one chunk) so latency doesn't creep up
                 err = len(queue) - args.buffer
@@ -544,7 +645,7 @@ async def main():
                           flush=True)
 
         try:
-            await asyncio.gather(sender(), receiver(), pinger(), player(), commands())
+            await asyncio.gather(sender(), receiver(), pinger(), player(), controller())
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         finally:
@@ -553,8 +654,8 @@ async def main():
                 await ws.send(json.dumps({"type": "stop"}))
             except Exception:
                 pass
-            sink.close()
-            for wr in (review, saved_in):
+            sess["sink"].close()
+            for wr in (sess["review"], saved_in):
                 if wr is not None:
                     wr.close()
             if args.save_input:
