@@ -20,3 +20,9 @@
   provider-independent setup (HF artifacts) removes the pin.
 - **Prompting JoyAI for a character:** describe it explicitly; a full-body ref beats an upper-body crop; the built-in
   prompt enhancer hurt identity.
+
+## Vast self-stop watchdog needs a heartbeat source (2026-11-04)
+`vast_watchdog.sh` stops the instance after IDLE_MIN without a touch of `/workspace/.heartbeat`, and `pod.sh` doesn't
+touch it. A live session (only the tunnel open) therefore got the 5090 stopped after 45 min, and the stopped instance
+couldn't restart: its GPU had been rented out meanwhile ("Required resources are currently unavailable"). Run
+`vast_heartbeat.sh` next to the watchdog: it touches the heartbeat while any SSH session (our tunnel) is established.
