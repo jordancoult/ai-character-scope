@@ -56,7 +56,7 @@ The effect fades out completely (the plain JoyAI / source frame shows) when one 
 | generated face yaw | `/gate src_yaw <start> <off>` | 30 45 (deg) | the character's own head (JoyAI output) |
 | generated face pitch | `/gate src_pitch <start> <off>` | 20 35 (deg) | the character's own head |
 | hold after a cover | `/gate hold <frames>` | 6 | clear frames before the effect returns |
-| visibility checks | `/gate visibility on|off` | on | the cover + confidence gates (off saves ~3 ms GPU per 2 frames) |
+| visibility checks | `/gate visibility on\|off` | on | the cover + confidence gates (off saves ~3 ms GPU per 2 frames) |
 
 The result panel shows the live values: `w` (effect strength 0..1), `yaw`, `mouth` (visibility), `conf` (face
 confidence), so you can see which gate is tripping.
@@ -70,15 +70,21 @@ confidence), so you can see which gate is tripping.
 | `q` | | quit |
 | `--source` | `assets/g-star-screenshot-no-hat.png` | image or video to animate |
 | `--crop x0,y0,x1,y1` | none | crop the source (fractions) |
-| `--driver auto|VIDEO` | webcam | drive from a recording instead of the webcam |
+| `--driver auto\|VIDEO` | webcam | drive from a recording instead of the webcam |
 | `--camera` | `/dev/video0` | webcam device |
 | `--neutral-ema` | 0.01 | how fast your "neutral face" baseline re-adapts (0.01 ~ 4 s, 0 = keep the first frame) |
 | `--base-ema` | 0.08 | how fast the character's resting expression follows a video source (irrelevant for images) |
 | `--smooth` | 0 | old simple smoothing, only used if `--euro off` |
 | `--no-visibility` | | don't run the cover / confidence gates |
-| `--layout 1|3` | 3 | result only / webcam - source - result |
+| `--layout 1\|3` | 3 | result only / webcam - source - result |
 | `--save out.mp4` | | record the window |
 | `--fps` | 25 | output rate |
 
-Bridge equivalents: `--facefix rel|abs`, `--facefix-preset NAME`, `--facefix-gains 'lip=..,eye=..'`; live `/gain`,
+**Saved vs not saved.** `/save` stores mode, pose, gains, all limits, all gates (incl. hold and visibility) and the
+smoothing (`euro`, including "off" — saved as `null`). Not saved (start-up flags only): `--neutral-ema`, `--base-ema`,
+`--smooth`, `--source`/`--crop`/`--camera`/`--fps`/`--layout`. Loading a preset first resets limits and gains to the
+defaults, then applies the preset, so a preset fully reproduces its settings.
+
+Bridge: `--facefix-preset NAME` and live `/preset NAME` load the whole preset (limits, gates, smoothing) except
+pose, which stays off (JoyAI output already moves the head). Bridge equivalents: `--facefix rel|abs`, `--facefix-preset NAME`, `--facefix-gains 'lip=..,eye=..'`; live `/gain`,
 `/limit`, `/gate`, `/euro`, `/preset`.

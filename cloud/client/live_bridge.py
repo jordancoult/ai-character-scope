@@ -287,6 +287,10 @@ class FaceFixer:
         pre = load_presets().get(args.facefix_preset, {}) if args.facefix_preset else {}
         gains = dict(pre.get("gains", {})) | parse_gains(args.facefix_gains)
         self.lp = self.pool_gpu.submit(lambda: LPPass(mode=args.facefix, gains=gains)).result()
+        if pre:  # the whole preset (limits, gates, smoothing), then the command-line gain overrides
+            self.lp.apply_preset(args.facefix_preset)
+            self.lp.set_gain(**parse_gains(args.facefix_gains))
+            self.lp.pose = False  # JoyAI output already moves the head; pose transfer is for still images
         self.drv = self.pool_in.submit(self.lp.driver).result()
         gc.freeze()                                       # long-lived objects out of the GC: fewer pauses
         print(f"[bridge] facefix {args.facefix} (LivePortrait TensorRT, gains {self.lp.gains}) ready "
@@ -521,6 +525,7 @@ async def main():
                     try:
                         if "preset" in cmd:
                             ff.lp.apply_preset(cmd["preset"])
+                            ff.lp.pose = False  # JoyAI output already moves the head
                         if cmd.get("gains"):
                             ff.lp.set_gain(**{k: float(v) for k, v in cmd["gains"].items()})
                         if "facefix" in cmd:
