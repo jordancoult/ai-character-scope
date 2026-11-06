@@ -579,7 +579,8 @@ async def main():
                             loop.call_soon_threadsafe(ctl.put_nowait, line.rstrip("\n"))
                     threading.Thread(target=reader, daemon=True).start()
                     print("[bridge] type a new prompt + Enter to change it; /r = reset memory; /q = quit"
-                          + ("; /gain <lip|eye|brow|all> <value> = face motion gain" if ff is not None else ""), flush=True)
+                          + ("; /gain <lip|eye|brow|all> <value> = face motion gain" if ff is not None else "")
+                          + "; /stats on|off = periodic stats line", flush=True)
                 if args.dashboard and not ui["dash"]:
                     ui["dash"] = True
                     import dashboard
@@ -597,6 +598,15 @@ async def main():
                     if not line:
                         continue
                     parts = line.split()
+                    if line.startswith("/stats"):            # periodic '[bridge] played ...' line, not saved
+                        arg = parts[1:]
+                        if arg in (["on"], ["off"]):
+                            ui["stats"] = arg == ["on"]
+                        elif arg:
+                            say("usage: /stats on|off")
+                            continue
+                        say(f"periodic stats {'on' if ui.get('stats', True) else 'off'}")
+                        continue
                     if line in ("/q", "/quit"):
                         await apply({"quit": True})
                     elif line.startswith("/preset"):
@@ -697,7 +707,7 @@ async def main():
                     speed = 1.0 + max(-0.25, min(0.25, 0.05 * err))
                     next_t = max(next_t + 1.0 / (args.play_fps * speed), time.time() - 0.1)
                     await asyncio.sleep(max(0.0, next_t - time.time()))
-                    if n % int(args.play_fps * 10) == 0:
+                    if n % int(args.play_fps * 10) == 0 and ui.get("stats", True):
                         l = sorted(lat[-250:])
                         fx = ""
                         if ff is not None:

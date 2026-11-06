@@ -174,11 +174,13 @@ def main():
                                 "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-profile:v", "high",
                                 "-level", "4.1", "-movflags", "+faststart", a.save], stdin=subprocess.PIPE)
     quit_ = threading.Event()
+    show_stats = threading.Event()  # periodic '[live] N frames, render ...' line; '/stats on|off', not saved
+    show_stats.set()
 
     def commands():
         print(f"[live] gains {lp.gains}. Type '/gain <lip|eye|brow|brow2|rest|all> <v>', '/gain', '/reset' "
               "(re-take your neutral face), '/limit [region max|off]', '/gate [yaw|pitch a b | hands on|off | hold n]', "
-              "'/euro [upper|lower] [min_cutoff beta | off]', '/preset [name]', '/save <name>' or 'q' + Enter",
+              "'/euro [upper|lower] [min_cutoff beta | off]', '/preset [name]', '/save <name>', '/stats on|off' or 'q' + Enter",
               flush=True)
         for line in sys.stdin:
             line = line.strip()
@@ -240,6 +242,17 @@ def main():
                 print(f"[live] saved preset {parts[1]!r}: mode {lp.mode}, pose {'on' if lp.pose else 'off'}, "
                       f"gains {lp.gains} -> {Path(__file__).resolve().parent / 'presets.json'}", flush=True)
                 continue
+            if line.startswith("/stats"):
+                arg = line.split()[1:]
+                if arg == ["on"]:
+                    show_stats.set()
+                elif arg == ["off"]:
+                    show_stats.clear()
+                elif arg:
+                    print("[live] usage: /stats on|off", flush=True)
+                    continue
+                print(f"[live] periodic stats {'on' if show_stats.is_set() else 'off'}", flush=True)
+                continue
             if line in ("/reset", "/r"):  # take your current face / head position as the new neutral
                 lp.neutral_in = lp.drv0 = None
                 if drv is not None:
@@ -295,7 +308,7 @@ def main():
             except queue.Full:
                 pass                              # display behind: drop this frame rather than stall
             k += 1
-            if k % 125 == 0:
+            if k % 125 == 0 and show_stats.is_set():
                 print(f"[live] {k} frames, render {np.median(ms):.0f} ms median / {max(ms):.0f} max, "
                       f"late ticks {late}", flush=True)
             t_next += period

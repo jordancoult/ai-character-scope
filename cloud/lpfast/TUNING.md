@@ -100,6 +100,7 @@ confidence), so you can see which gate is tripping and pick thresholds from what
 | `/reset` | re-takes your neutral face, head reference and face detection (after moving your seat, or if anything looks stuck) | | |
 | `/gain` `/limit` `/gate` `/euro` `/preset` | typed alone: show the current values / list presets | | |
 | `/save NAME` | saves mode, pose, gains, limits, gates and smoothing as preset NAME (overwrites it) | | any name without spaces |
+| `/stats on\|off` | turns the periodic `[live] N frames, render ... ms, late ticks` line on / off (`/stats` alone shows the state). Always starts on, not saved in presets; the bridge has the same command for its `[bridge] played ...` line | on | on / off |
 | `q` | quits | | |
 | `--source` | the image or video to animate | `assets/g-star-screenshot-no-hat.png` | image or video file |
 | `--crop x0,y0,x1,y1` | crops the source first | none | fractions 0..1 |
