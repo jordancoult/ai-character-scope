@@ -58,6 +58,10 @@ DEFAULT_LIMITS = {"lip": (0.14, 0.21), "eye": (0.07, 0.10), "brow": (0.10, 0.14)
 # unit "mouth opens" direction in the lip keypoints' expression space (6 x 3, from a real driver: mean of the most
 # open quarter minus the most closed quarter); the closing limit acts on the component along it
 LIP_OPEN_DIR = Path(__file__).resolve().parent / "lip_open_dir.npy"
+# keypoints above / below nose level (canonical positions, the same split on G-Star, the girl ref, the user's webcam and
+# a portrait clip). Note LivePortrait's "lip" set includes 12 and 14, which sit on the eyes: they count as upper.
+UPPER_KPS = (0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16)
+LOWER_KPS = (3, 4, 5, 6, 7, 17, 18, 19, 20)
 DEFAULT_EURO = (1.0, 5.0)  # driver-expression One-Euro (min cutoff Hz, beta): -30 % output jitter at the user's gains
 
 # Since 2026-11-03 the defaults are the user's live-tuned presets (presets.json): rel = "gstar", abs = "girl".
@@ -78,8 +82,28 @@ def save_preset(name, mode, gains, pose=False, note="", limits=None, gates=None,
     if gates is not None:
         p[name]["gates"] = dict(gates)
     if euro != "unset":
-        p[name]["euro"] = list(euro) if euro else None
+        p[name]["euro"] = {k: (list(v) if v else None) for k, v in euro.items()} if isinstance(euro, dict) else \
+            (list(euro) if euro else None)
     PRESETS_FILE.write_text(json.dumps(p, indent=2) + "\n")
+
+
+def format_euro(e):
+    f = lambda v: f"{v[0]:g} {v[1]:g}" if v else "off"  # noqa: E731
+    return "off" if not e else f"upper {f(e.get('upper'))}, lower {f(e.get('lower'))}"
+
+
+def parse_euro(text):
+    """--euro: 'off' | 'mc,beta' (both halves) | 'upper=mc:beta,lower=off' (either or both)."""
+    text = text.replace(" ", "")
+    if text == "off":
+        return None
+    if "=" not in text:
+        return tuple(float(x) for x in text.split(","))
+    out = {}
+    for part in text.split(","):
+        k, v = part.split("=")
+        out[k] = None if v == "off" else tuple(float(x) for x in v.split(":"))
+    return out
 
 
 _P = load_presets()
@@ -319,7 +343,7 @@ class OneEuro:
     """One-Euro filter on a GPU tensor (per element): smooths hard when the signal is still (kills webcam/landmark
     jitter, which high gains amplify), little when it moves fast (keeps lip sync responsive). fps = call rate."""
 
-    def __init__(self, min_cutoff=1.0, beta=5.0, d_cutoff=1.0, fps=25.0):
+    def __init__(self, min_cutoff=1.0, beta=5.0, d_cutoff=1.0, fps=25.0):  # min_cutoff / beta: numbers or tensors
         self.min_cutoff, self.beta, self.d_cutoff, self.te = min_cutoff, beta, d_cutoff, 1.0 / fps
         self.x = self.dx = None
 
@@ -378,14 +402,46 @@ class LPPass:
 
         self._warmup()
 
-    def set_euro(self, euro):
-        """Driver-expression One-Euro filter: None/off, or (min_cutoff Hz, beta). Lower min_cutoff = calmer when
-        still; higher beta = less lag on fast motion."""
-        if euro and not (float(euro[0]) > 0 and float(euro[1]) >= 0):
+    def set_euro(self, euro, part=None):
+        """Driver-expression One-Euro filter, separately for the keypoints above (upper: brows, eyes, forehead) and
+        below (lower: mouth, cheeks, jaw) nose level. euro = None (off), (min_cutoff Hz, beta), or
+        {"upper": .., "lower": ..} with either of those each; part = "upper" / "lower" sets only that half.
+        Lower min_cutoff = calmer when still; higher beta = less lag on fast motion."""
+        if isinstance(euro, dict):
+            for k, v in euro.items():
+                self.set_euro(v, k)
+            return self.euro
+        if euro is not None and len(euro) and not (float(euro[0]) > 0 and float(euro[1]) >= 0):
             raise ValueError(f"euro: need min_cutoff > 0 and beta >= 0, got {euro[0]} {euro[1]}")
-        self.euro = tuple(euro) if euro else None
-        self._euro = OneEuro(*self.euro) if self.euro else None
+        if part not in (None, "upper", "lower"):
+            raise ValueError(f"euro: part is upper or lower, got {part!r}")
+        v = (float(euro[0]), float(euro[1])) if euro is not None and len(euro) else None
+        cur = dict(getattr(self, "euro", None) or {})
+        for k in ((part,) if part else ("upper", "lower")):
+            cur[k] = v
+        self.euro = {"upper": cur.get("upper"), "lower": cur.get("lower")}
+        if not (self.euro["upper"] or self.euro["lower"]):
+            self._euro = None
+            return self.euro
+        mc = torch.full((1, 21, 3), float("inf"), device="cuda")  # inf cutoff = passthrough for an "off" half
+        beta = torch.zeros((1, 21, 3), device="cuda")
+        for k, kps in (("upper", UPPER_KPS), ("lower", LOWER_KPS)):
+            if self.euro[k]:
+                mc[0, list(kps)], beta[0, list(kps)] = self.euro[k]
+        self._euro = OneEuro(mc, beta)
         return self.euro
+
+    def euro_command(self, args):
+        """Live '/euro ...' (live_test + bridge): [] show | off | <mc> <beta> | upper|lower <mc> <beta> | upper|lower off."""
+        part = args[0] if args and args[0] in ("upper", "lower") else None
+        rest = args[1:] if part else args
+        if rest == ["off"]:
+            self.set_euro(None, part)
+        elif len(rest) == 2 and all(r.replace(".", "", 1).isdigit() for r in rest):
+            self.set_euro((float(rest[0]), float(rest[1])), part)
+        elif rest or part:
+            raise ValueError("usage: /euro <min_cutoff> <beta> | off, or /euro upper|lower <min_cutoff> <beta> | off")
+        return format_euro(self.euro)
 
     def apply_preset(self, name):
         """Switch mode, gains and pose transfer to a saved preset (presets.json); safe while rendering."""

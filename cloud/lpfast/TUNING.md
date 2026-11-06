@@ -44,15 +44,37 @@ Accepted for all: `0 <= knee < max`. "Breaks at" = where G-Star's image starts t
 The knee is where squashing starts: about 2/3 of max is a good default. A knee close to max = a hard stop; a low
 knee = softer, but big expressions look weaker.
 
-## Smoothing (`/euro <min_cutoff> <beta> | off`, `--euro`, saved)
+## Smoothing (`/euro [upper|lower] <min_cutoff> <beta> | off`, `--euro`, saved)
 A One-Euro filter on your expression before it's applied: it smooths hard while your face is still (removes webcam
 and low-light jitter, which high gains amplify) and barely at all when you move fast, so lip sync stays quick.
-`off` disables it (saved as `null`).
+It has two independent halves, split at nose level, so you can e.g. calm jittery eyes/brows a lot while keeping the
+mouth snappy:
+
+| Half | What it covers | Keypoints |
+|---|---|---|
+| `upper` | everything above the nose: eyebrows, eyelids, forehead, temples | 0, 1, 2, 8, 9, 10, 11-16 |
+| `lower` | everything below the nose: mouth, lips, cheeks, jaw, chin | 3-7, 17-20 |
+
+(Measured on G-Star, the girl reference, your webcam and a portrait clip: the same split on all of them. Two of
+LivePortrait's "lip" keypoints, 12 and 14, actually sit on the eyes, so they are in `upper`.)
+
+| Command | What it does |
+|---|---|
+| `/euro` | show both halves |
+| `/euro 1 5` / `/euro off` | set / disable both halves |
+| `/euro upper 0.5 3` | set only the upper half |
+| `/euro lower off` | disable only the lower half (raw mouth motion) |
+| `--euro 1,5` / `--euro upper=0.5:3,lower=1.5:8` / `--euro lower=off` | same at start-up (a half you leave out keeps the preset / default) |
+
+Each half has the same two numbers:
 
 | Parameter | What it does | Default | Accepted | Useful | Lower | Higher |
 |---|---|---|---|---|---|---|
-| min_cutoff (Hz) | how much smoothing when you're still | 1.0 | > 0 | 0.3 to 3 | calmer, slightly laggier | more detail, more jitter |
-| beta | how quickly smoothing backs off when you move | 5 | >= 0 | 0 to 20 | more lag on fast moves (0 = constant smoothing) | snappier, more jitter while talking |
+| min_cutoff (Hz) | how much smoothing when you're still | 1.0 | > 0 | 0.3 to 3 (mouth: 1 to 3, eyes/brows: 0.3 to 1.5) | calmer, slightly laggier | more detail, more jitter |
+| beta | how quickly smoothing backs off when you move | 5 | >= 0 | 0 to 25 | more lag on fast moves (0 = constant smoothing) | snappier, more jitter while talking |
+
+Presets save both halves (`"euro": {"upper": [1, 5], "lower": null}`, `null` = off). Older presets with a single
+pair (`"euro": [5, 25]`) still load and apply it to both halves.
 
 ## Drop-out gates (`/gate ...`, saved)
 These fade the effect out completely (the plain JoyAI / source frame shows) when your face can't be read well, so

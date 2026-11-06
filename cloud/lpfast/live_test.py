@@ -81,8 +81,9 @@ def main():
     p.add_argument("--gains", default="")
     p.add_argument("--limits", default="", help="soft limits per region, e.g. lip=0.21,eye=0.1 (max; knee = 2/3) or "
                    "lip=0.14:0.21 (knee:max), lip=off; defaults calibrated on G-Star (lp_pass.DEFAULT_LIMITS)")
-    p.add_argument("--euro", default=None, help="driver-expression One-Euro filter 'min_cutoff,beta' (default 1.0,5; "
-                   "'off' = none). Lower min_cutoff = calmer when still; higher beta = less lag on fast motion")
+    p.add_argument("--euro", default=None, help="driver-expression One-Euro filter 'min_cutoff,beta' for all keypoints "
+                   "(default 1.0,5; 'off' = none), or per half 'upper=1:5,lower=0.5:8' (upper = above nose level: brows, "
+                   "eyes; lower = mouth, cheeks, jaw; 'lower=off'). Lower min_cutoff = calmer when still; higher beta = less lag on fast motion")
     p.add_argument("--no-visibility", action="store_true", help="don't run the occlusion / turned-away gates")
     p.add_argument("--smooth", type=float, default=0.0, help="driver expression smoothing 0..0.9 (higher = calmer, "
                    "laggier)")
@@ -113,7 +114,7 @@ def main():
         src = [f[int(y0 * h0):int(y1 * h0), int(x0 * w0):int(x1 * w0)] for f in src]
     src = [f[:f.shape[0] // 2 * 2, :f.shape[1] // 2 * 2] for f in src]  # even size for the video encoders
     H, W = src[0].shape[:2]
-    from lp_pass import load_presets, save_preset
+    from lp_pass import DEFAULT_EURO, load_presets, parse_euro, save_preset
     pre = load_presets().get(a.preset, {}) if a.preset else {}
     if a.preset and not pre:
         raise SystemExit(f"no preset {a.preset!r}; have {sorted(load_presets())}")
@@ -131,7 +132,10 @@ def main():
     limits = {k: (tuple(v) if v else None) for k, v in pre.get("limits", {}).items()} | parse_limits(a.limits)
     euro = pre.get("euro", "default")
     if a.euro:
-        euro = None if a.euro == "off" else tuple(float(x) for x in a.euro.split(","))
+        euro = parse_euro(a.euro)
+        if isinstance(euro, dict):  # one half given: the other keeps the preset / default
+            pe = pre.get("euro", DEFAULT_EURO)
+            euro = ({"upper": pe, "lower": pe} if not isinstance(pe, dict) else dict(pe)) | euro
     lp = LPPass(mode=a.mode, gains=gains, pose=pose, drv_smooth=a.smooth, neutral_ema=a.neutral_ema,
                 base_ema=a.base_ema, limits=limits, visibility=not a.no_visibility,
                 **({} if euro == "default" else {"euro": euro}))
@@ -174,7 +178,7 @@ def main():
     def commands():
         print(f"[live] gains {lp.gains}. Type '/gain <lip|eye|brow|brow2|rest|all> <v>', '/gain', '/reset' "
               "(re-take your neutral face), '/limit [region max|off]', '/gate [yaw|pitch a b | hands on|off | hold n]', "
-              "'/euro [min_cutoff beta | off]', '/preset [name]', '/save <name>' or 'q' + Enter",
+              "'/euro [upper|lower] [min_cutoff beta | off]', '/preset [name]', '/save <name>' or 'q' + Enter",
               flush=True)
         for line in sys.stdin:
             line = line.strip()
@@ -194,13 +198,7 @@ def main():
             if line.startswith("/euro"):
                 parts = line.split()
                 try:
-                    if len(parts) == 2 and parts[1] == "off":
-                        lp.set_euro(None)
-                    elif len(parts) == 3:
-                        lp.set_euro((float(parts[1]), float(parts[2])))
-                    elif len(parts) != 1:
-                        raise ValueError("usage: /euro <min_cutoff> <beta> | /euro off")
-                    print(f"[live] euro filter {lp.euro}", flush=True)
+                    print(f"[live] euro filter: {lp.euro_command(parts[1:])}", flush=True)
                 except ValueError as e:
                     print(f"[live] {e}", flush=True)
                 continue
