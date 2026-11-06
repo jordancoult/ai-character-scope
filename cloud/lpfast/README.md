@@ -28,7 +28,7 @@ Type in the terminal + Enter while it runs:
 | `/limit lipclose 0.01:0.025` | how far the lips may close past the character's resting mouth (stops them passing through each other) |
 | `/euro 1.0 5` / `/euro off` / `/euro` / `/euro upper 0.5 3` / `/euro lower off` | smoothing of your expression (One-Euro), for both halves or only `upper` (brows, eyes) / `lower` (mouth, cheeks, jaw): lower first number = calmer when still, higher second = less lag on fast moves |
 | `/stats on` / `/stats off` | periodic stats line on / off (always starts on, not saved) |
-| `/meters on` / `/meters off` | live lip / close / jaw values (now, 3 s peak, max) on the result, to pick your limits |
+| `/meters on` / `/meters off` | temporary: live lip / close / jaw values (now, 3 s peak, max) on the result, to pick your limits |
 | `/gate yaw 25 40` / `/gate pitch 18 30` | your head turned / tilted too far: effect fades out from the first to the second angle |
 | `/gate cover 0.55 0.35` | mouth covered (hand, mic, cup...): fades out as mouth visibility drops from 0.55 to 0.35 |
 | `/gate score 0.65 0.5` | face confidence (turned away / profile): fades out from 0.65 down to 0.5 |

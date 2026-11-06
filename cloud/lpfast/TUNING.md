@@ -41,7 +41,7 @@ Accepted for all: `0 <= knee < max`. "Breaks at" = where G-Star's image starts t
 | `brow2` | caps the extra brow / upper-lid keypoint | 0.05:0.08 | 0.03 to 0.12 | not calibrated |
 | `rest` | caps cheek / jaw shape changes | 0.06:0.10 | 0.03 to 0.12 | not calibrated |
 
-**Finding your max with the meters.** In `live_test` the top of the result panel shows a live row for the mouth:
+**Finding your max with the meters** (temporary testing aid, will be removed once the limits are set). In `live_test` the top of the result panel shows a live row for the mouth:
 `lip` (mouth opening / lip shape), `close` (how far your lips press *past closed*) and `jaw` (the `rest` region:
 cheeks / jaw). Each shows `now`, `pk` (the highest value in the last 3 s) and the current `max`, in exactly the units
 of `/limit` (your motion x gain, before limiting), so: make the biggest mouth you want to allow, read `pk`, and set
