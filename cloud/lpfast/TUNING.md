@@ -41,6 +41,14 @@ Accepted for all: `0 <= knee < max`. "Breaks at" = where G-Star's image starts t
 | `brow2` | caps the extra brow / upper-lid keypoint | 0.05:0.08 | 0.03 to 0.12 | not calibrated |
 | `rest` | caps cheek / jaw shape changes | 0.06:0.10 | 0.03 to 0.12 | not calibrated |
 
+**Finding your max with the meters.** In `live_test` the top of the result panel shows a live row for the mouth:
+`lip` (mouth opening / lip shape), `close` (how far your lips press *past closed*) and `jaw` (the `rest` region:
+cheeks / jaw). Each shows `now`, `pk` (the highest value in the last 3 s) and the current `max`, in exactly the units
+of `/limit` (your motion x gain, before limiting), so: make the biggest mouth you want to allow, read `pk`, and set
+that (or a little above) as the max. White = below the knee, yellow = being softened, red = at the max (clamped).
+`jaw` only moves when the `rest` gain is above 0 (it's 0 in `gstar`). `/meters off` / `/meters on` hides / shows the
+row (always starts on, not saved). Live_test only; the bridge has no overlay.
+
 The knee is where squashing starts: about 2/3 of max is a good default. A knee close to max = a hard stop; a low
 knee = softer, but big expressions look weaker.
 
@@ -101,10 +109,11 @@ confidence), so you can see which gate is tripping and pick thresholds from what
 | `/gain` `/limit` `/gate` `/euro` `/preset` | typed alone: show the current values / list presets | | |
 | `/save NAME` | saves mode, pose, gains, limits, gates and smoothing as preset NAME (overwrites it) | | any name without spaces |
 | `/stats on\|off` | turns the periodic `[live] N frames, render ... ms, late ticks` line on / off (`/stats` alone shows the state). Always starts on, not saved in presets; the bridge has the same command for its `[bridge] played ...` line | on | on / off |
+| `/meters on\|off` | shows / hides the lip / close / jaw meter row on the result (see Motion limits) | on | on / off |
 | `q` | quits | | |
 | `--source` | the image or video to animate | `assets/g-star-screenshot-no-hat.png` | image or video file |
 | `--crop x0,y0,x1,y1` | crops the source first | none | fractions 0..1 |
-| `--driver auto\|VIDEO` | drives from a recording instead of the webcam | webcam | |
+| `--driver auto\|VIDEO` | drives from a recording instead of the webcam (with an image source it just plays through) | webcam | |
 | `--camera` | which webcam to use | `/dev/video0` | device path |
 | `--neutral-ema` | how fast your "neutral face" baseline re-adapts (0.01 ~ 4 s, 0.05 ~ 1 s, 0 = keep the first frame) | 0.01 | 0 to 1; useful 0 to 0.05 |
 | `--base-ema` | how fast the character's resting expression follows a video source (no effect on images) | 0.08 | 0 to 1; useful 0.02 to 0.3 |

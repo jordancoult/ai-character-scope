@@ -384,6 +384,7 @@ class LPPass:
         self.set_gain(**(gains or {}))
         self.base_ema, self.neutral_ema, self.fade, self.drv_smooth = base_ema, neutral_ema, fade, drv_smooth
         self.set_euro(euro)
+        self.show_meters, self.meters = False, {}  # live per-region motion values (live_test overlay)
         self.yaw_gate, self.pitch_gate = yaw_gate, pitch_gate
         # driver gates: the speaker turned too far (yaw absolute, pitch relative to their usual pitch) or a hand over
         # the face -> the effect fades out completely; after a cover it waits `cover_hold` clear frames
@@ -526,22 +527,40 @@ class LPPass:
                 self.limits[k] = (2.0 * float(v) / 3.0, float(v))
         masks = []
         self._close = None
-        if self.limits.get("lipclose") and LIP_OPEN_DIR.exists():
+        U = None
+        if LIP_OPEN_DIR.exists():
             U = torch.zeros(1, 21, 3, device="cuda")
             U[0, [k for k, _ in REGIONS["lip"]]] = torch.from_numpy(np.load(LIP_OPEN_DIR)).float().cuda()
-            self._close = (U, *self.limits["lipclose"])
+            if self.limits.get("lipclose"):
+                self._close = (U, *self.limits["lipclose"])
+        meter = {}
         for name, kps in REGIONS.items():
+            M = torch.zeros(1, 21, 3, device="cuda")
+            for k, axes in kps:
+                M[0, k, list(axes)] = 1.0
+            meter[name] = M
             if self.limits.get(name):
-                M = torch.zeros(1, 21, 3, device="cuda")
-                for k, axes in kps:
-                    M[0, k, list(axes)] = 1.0
                 masks.append((M, *self.limits[name]))
         self._limit_masks = masks
+        self._meter = (meter, U)
         return dict(self.limits)
+
+    def _measure(self, D):
+        """Live meters: each region's motion in the units of its limit (gain applied, before limiting), and how far
+        the lips press past closed (lipclose units). One GPU->CPU copy."""
+        meter, U = self._meter
+        vals = [(D * M).norm() for M in meter.values()]
+        names = list(meter)
+        if U is not None:
+            vals.append((-(D * U).sum()).clamp(min=0))
+            names.append("lipclose")
+        self.meters = dict(zip(names, torch.stack(vals).tolist()))
 
     def _soft_limit(self, D):
         """Compress each region's expression change D (1x21x3) past its knee (tanh), never beyond its max; the lip
         component along 'mouth closes' gets its own (tight) limit."""
+        if self.show_meters:
+            self._measure(D)
         if self._close is not None:
             U, knee, mx = self._close
             a = (D * U).sum()                       # >0 opening, <0 closing past the resting mouth

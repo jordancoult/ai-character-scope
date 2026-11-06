@@ -60,10 +60,41 @@ class Camera:
         self.cap.release()
 
 
-def label(img, text):
-    cv2.putText(img, text, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
-    cv2.putText(img, text, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+def label(img, text, y=24, scale=0.6, color=(255, 255, 255), x=8):
+    cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
     return img
+
+
+METERS = (("lip", "lip"), ("close", "lipclose"), ("jaw", "rest"))  # (shown as, limit name)
+
+
+class Meters:
+    """Live motion values for picking limits: per region now / peak of the last 3 s / the current max. Same units
+    as /limit (your motion x gain, before limiting). White = below the knee, yellow = being compressed, red = at
+    or past the max (clamped there)."""
+
+    def __init__(self, fps):
+        self.hist = {k: deque(maxlen=int(3 * fps)) for _, k in METERS}
+
+    def draw(self, img, meters, limits, y=20):
+        """Draws the row (wrapping if the panel is narrow); returns the y below it."""
+        x = 8
+        for shown, k in METERS:
+            v = meters.get(k)
+            self.hist[k].append(v or 0.0)
+            lim = limits.get(k)
+            peak = max(self.hist[k])
+            col = (255, 255, 255)
+            if v is not None and lim:
+                col = (60, 60, 255) if v >= lim[1] else (0, 220, 255) if v > lim[0] else col
+            txt = f"{shown} {'-' if v is None else f'{v:.3f}'} pk {peak:.3f} max {f'{lim[1]:g}' if lim else 'off'}"
+            w = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)[0][0]
+            if x > 8 and x + w > img.shape[1] - 4:
+                x, y = 8, y + 17
+            label(img, txt, y=y, scale=0.42, color=col, x=x)
+            x += w + 14
+        return y + 20
 
 
 def main():
@@ -143,6 +174,7 @@ def main():
         lp.set_gate(**{k: v for k, v in pre["gates"].items() if not (k in ("hands", "visibility") and a.no_visibility)})
     print(f"[live] source {Path(a.source).name} {W}x{H}{' (image)' if is_image else ''}, head pose transfer "
           f"{'on' if pose else 'off'}", flush=True)
+    lp.show_meters = True  # the lip / close / jaw row on the result; '/meters off' hides it (not saved)
     drv = lp.driver()
     cam, dfr, pair = None, None, None
     if a.driver:
@@ -152,8 +184,12 @@ def main():
         sj = Path(a.source).with_suffix(".json")
         import json
         seq = json.load(open(sj)).get("source_seq") if sj.exists() else None
-        pair = [s - 1 for s in seq[:len(src)]] if seq else align_dtw(dfr, src).tolist()
-        print(f"[live] driver {dpath.name}: {len(dfr)} frames, pairing {'source_seq' if seq else 'DTW'}", flush=True)
+        if is_image:  # a still source: just play the recording through (pairing would freeze it on one frame)
+            pair, how = list(range(len(dfr))), "none (image source)"
+        else:
+            pair = [s - 1 for s in seq[:len(src)]] if seq else align_dtw(dfr, src).tolist()
+            how = "source_seq" if seq else "DTW"
+        print(f"[live] driver {dpath.name}: {len(dfr)} frames, pairing {how}", flush=True)
         dfr = [cv2.resize(f, (W, H)) if f.shape[:2] != (H, W) else f for f in dfr]
     else:
         cam = Camera(a.camera, W, H)
@@ -162,7 +198,7 @@ def main():
             time.sleep(0.05)
         if cam.frame is None:
             raise SystemExit("no frames from the camera")
-    get_driver = (lambda k: dfr[pair[k % len(src)]]) if dfr is not None else (lambda k: cam.frame)
+    get_driver = (lambda k: dfr[pair[k % len(pair)]]) if dfr is not None else (lambda k: cam.frame)
     ow = W * a.layout
     play = subprocess.Popen(["ffplay", "-v", "error", "-window_title", "lpfast live test", "-f", "rawvideo",
                              "-pixel_format", "bgr24", "-video_size", f"{ow}x{H}", "-framerate", str(a.fps),
@@ -180,7 +216,7 @@ def main():
     def commands():
         print(f"[live] gains {lp.gains}. Type '/gain <lip|eye|brow|brow2|rest|all> <v>', '/gain', '/reset' "
               "(re-take your neutral face), '/limit [region max|off]', '/gate [yaw|pitch a b | hands on|off | hold n]', "
-              "'/euro [upper|lower] [min_cutoff beta | off]', '/preset [name]', '/save <name>', '/stats on|off' or 'q' + Enter",
+              "'/euro [upper|lower] [min_cutoff beta | off]', '/preset [name]', '/save <name>', '/stats on|off', '/meters on|off' or 'q' + Enter",
               flush=True)
         for line in sys.stdin:
             line = line.strip()
@@ -242,6 +278,15 @@ def main():
                 print(f"[live] saved preset {parts[1]!r}: mode {lp.mode}, pose {'on' if lp.pose else 'off'}, "
                       f"gains {lp.gains} -> {Path(__file__).resolve().parent / 'presets.json'}", flush=True)
                 continue
+            if line.startswith("/meters"):
+                arg = line.split()[1:]
+                if arg in (["on"], ["off"]):
+                    lp.show_meters = arg == ["on"]
+                elif arg:
+                    print("[live] usage: /meters on|off", flush=True)
+                    continue
+                print(f"[live] meters {'on' if lp.show_meters else 'off'}", flush=True)
+                continue
             if line.startswith("/stats"):
                 arg = line.split()[1:]
                 if arg == ["on"]:
@@ -289,6 +334,7 @@ def main():
     wt.start()
     period, k, t_next, t_start = 1.0 / a.fps, 0, time.perf_counter(), time.time()
     ms, late = deque(maxlen=100), 0
+    meters = Meters(a.fps)
     c = get_driver(0)
     fut = pool.submit(drv.analyze, c)
     try:
@@ -301,8 +347,16 @@ def main():
             t = time.perf_counter()
             r, info = lp.render(o, d)
             ms.append((time.perf_counter() - t) * 1000)
-            frame = np.hstack([label(c_now.copy(), "driver"), label(o.copy(), "source"),
-                               label(r.copy(), f"{lp.mode} w={info['w']:.2f}" + (f" yaw {info.get('drv_yaw')} mouth {info.get('mouth_vis')} conf {info.get('face_score')}" if 'drv_yaw' in info else ""))]) if a.layout == 3 else r
+            res = r.copy()
+            y0 = 24
+            if lp.show_meters:
+                y0 = meters.draw(res, lp.meters if info.get("ok") else {}, lp.limits) + 4
+            if a.layout == 3:
+                label(res, f"{lp.mode} w={info['w']:.2f}" + (f" yaw {info.get('drv_yaw')} mouth {info.get('mouth_vis')} "
+                                                             f"conf {info.get('face_score')}" if 'drv_yaw' in info else ""), y=y0)
+                frame = np.hstack([label(c_now.copy(), "driver"), label(o.copy(), "source"), res])
+            else:
+                frame = res
             try:
                 outq.put_nowait(frame)
             except queue.Full:
