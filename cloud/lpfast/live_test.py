@@ -70,9 +70,9 @@ METERS = (("lip", "lip"), ("close", "lipclose"), ("jaw", "rest"))  # (shown as, 
 
 
 class Meters:
-    """Live motion values for picking limits: per region now / peak of the last 3 s / the current max. Same units
-    as /limit (your motion x gain, before limiting). White = below the knee, yellow = being compressed, red = at
-    or past the max (clamped there)."""
+    """Live motion values for picking limits (temporary testing aid): per region what is applied to the face (after
+    the limit, never past max), in brackets what you asked for when the limit is acting (your motion x gain), the
+    3 s peak of what you asked for, and the max. White = below the knee, yellow = softened, red = held at the max."""
 
     def __init__(self, fps):
         self.hist = {k: deque(maxlen=int(3 * fps)) for _, k in METERS}
@@ -81,14 +81,15 @@ class Meters:
         """Draws the row (wrapping if the panel is narrow); returns the y below it."""
         x = 8
         for shown, k in METERS:
-            v = meters.get(k)
-            self.hist[k].append(v or 0.0)
+            v, v_in = meters.get(k, (None, None))
+            self.hist[k].append(v_in or 0.0)
             lim = limits.get(k)
             peak = max(self.hist[k])
             col = (255, 255, 255)
-            if v is not None and lim:
-                col = (60, 60, 255) if v >= lim[1] else (0, 220, 255) if v > lim[0] else col
-            txt = f"{shown} {'-' if v is None else f'{v:.3f}'} pk {peak:.3f} max {f'{lim[1]:g}' if lim else 'off'}"
+            if v is not None and lim and v_in > lim[0]:
+                col = (60, 60, 255) if v >= lim[1] - 0.02 * (lim[1] - lim[0]) else (0, 220, 255)
+            now = "-" if v is None else f"{v:.3f}" + (f" ({v_in:.3f})" if v_in - v > 5e-4 else "")
+            txt = f"{shown} {now} pk {peak:.3f} max {f'{lim[1]:g}' if lim else 'off'}"
             w = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)[0][0]
             if x > 8 and x + w > img.shape[1] - 4:
                 x, y = 8, y + 17

@@ -41,13 +41,19 @@ Accepted for all: `0 <= knee < max`. "Breaks at" = where G-Star's image starts t
 | `brow2` | caps the extra brow / upper-lid keypoint | 0.05:0.08 | 0.03 to 0.12 | not calibrated |
 | `rest` | caps cheek / jaw shape changes | 0.06:0.10 | 0.03 to 0.12 | not calibrated |
 
-**Finding your max with the meters** (temporary testing aid, will be removed once the limits are set). In `live_test` the top of the result panel shows a live row for the mouth:
-`lip` (mouth opening / lip shape), `close` (how far your lips press *past closed*) and `jaw` (the `rest` region:
-cheeks / jaw). Each shows `now`, `pk` (the highest value in the last 3 s) and the current `max`, in exactly the units
-of `/limit` (your motion x gain, before limiting), so: make the biggest mouth you want to allow, read `pk`, and set
-that (or a little above) as the max. White = below the knee, yellow = being softened, red = at the max (clamped).
-`jaw` only moves when the `rest` gain is above 0 (it's 0 in `gstar`). `/meters off` / `/meters on` hides / shows the
-row (always starts on, not saved). Live_test only; the bridge has no overlay.
+**Finding your max with the meters** (temporary testing aid, will be removed once the limits are set). In
+`live_test` the top of the result panel shows a live row for the mouth: `lip` (mouth opening / lip shape), `close`
+(how far your lips press *past closed*) and `jaw` (the `rest` region: cheeks / jaw). Each shows:
+- the value **applied to the face**: after the limit, never above max;
+- in brackets, what you **asked for** (your motion x gain), only while a limit is acting;
+- `pk`: the highest asked-for value in the last 3 s;
+- `max`: the current limit.
+
+Colors: white = untouched, yellow = being softened (past the knee), red = held at the max. To pick a max: make the
+biggest mouth you want, read `pk`, and set the max at or below it (where it still looks right). `lip` can show
+brackets while white when you press your lips: the `close` limit removes the pressing, which also shrinks the lip
+value. `jaw` only moves when the `rest` gain is above 0 (it's 0 in `gstar`). `/meters off` / `/meters on` hides /
+shows the row (always starts on, not saved). Live_test only.
 
 The knee is where squashing starts: about 2/3 of max is a good default. A knee close to max = a hard stop; a low
 knee = softer, but big expressions look weaker.

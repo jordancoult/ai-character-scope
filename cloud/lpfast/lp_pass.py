@@ -546,21 +546,21 @@ class LPPass:
         return dict(self.limits)
 
     def _measure(self, D):
-        """Live meters: each region's motion in the units of its limit (gain applied, before limiting), and how far
-        the lips press past closed (lipclose units). One GPU->CPU copy."""
+        """Live meters: each region's motion in the units of its limit (gain applied), and how far the lips press past
+        closed (lipclose units). One GPU->CPU copy."""
         meter, U = self._meter
         vals = [(D * M).norm() for M in meter.values()]
         names = list(meter)
         if U is not None:
             vals.append((-(D * U).sum()).clamp(min=0))
             names.append("lipclose")
-        self.meters = dict(zip(names, torch.stack(vals).tolist()))
+        return dict(zip(names, torch.stack(vals).tolist()))
 
     def _soft_limit(self, D):
         """Compress each region's expression change D (1x21x3) past its knee (tanh), never beyond its max; the lip
         component along 'mouth closes' gets its own (tight) limit."""
         if self.show_meters:
-            self._measure(D)
+            m_in = self._measure(D)
         if self._close is not None:
             U, knee, mx = self._close
             a = (D * U).sum()                       # >0 opening, <0 closing past the resting mouth
@@ -573,6 +573,8 @@ class LPPass:
             if float(n) > knee:
                 f = (knee + (mx - knee) * torch.tanh((n - knee) / (mx - knee))) / n
                 D = D * (1 - M) + D * M * f
+        if self.show_meters:  # applied (limited, never past max) and requested (your motion x gain)
+            self.meters = {k: (v, m_in[k]) for k, v in self._measure(D).items()}
         return D
 
     def _driver_gate(self, drv):
