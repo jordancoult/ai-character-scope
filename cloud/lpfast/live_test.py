@@ -81,6 +81,8 @@ def main():
     p.add_argument("--gains", default="")
     p.add_argument("--limits", default="", help="soft limits per region, e.g. lip=0.21,eye=0.1 (max; knee = 2/3) or "
                    "lip=0.14:0.21 (knee:max), lip=off; defaults calibrated on G-Star (lp_pass.DEFAULT_LIMITS)")
+    p.add_argument("--euro", default=None, help="driver-expression One-Euro filter 'min_cutoff,beta' (default 1.0,5; "
+                   "'off' = none). Lower min_cutoff = calmer when still; higher beta = less lag on fast motion")
     p.add_argument("--no-visibility", action="store_true", help="don't run the occlusion / turned-away gates")
     p.add_argument("--smooth", type=float, default=0.0, help="driver expression smoothing 0..0.9 (higher = calmer, "
                    "laggier)")
@@ -127,8 +129,12 @@ def main():
             out[k] = None if v in ("off", "0", "none") else (tuple(float(x) for x in v.split(":")) if ":" in v else float(v))
         return out
     limits = {k: (tuple(v) if v else None) for k, v in pre.get("limits", {}).items()} | parse_limits(a.limits)
+    euro = pre.get("euro", "default")
+    if a.euro:
+        euro = None if a.euro == "off" else tuple(float(x) for x in a.euro.split(","))
     lp = LPPass(mode=a.mode, gains=gains, pose=pose, drv_smooth=a.smooth, neutral_ema=a.neutral_ema,
-                base_ema=a.base_ema, limits=limits, visibility=not a.no_visibility)
+                base_ema=a.base_ema, limits=limits, visibility=not a.no_visibility,
+                **({} if euro == "default" else {"euro": euro}))
     if pre.get("gates"):
         lp.set_gate(**{k: v for k, v in pre["gates"].items() if not (k in ("hands", "visibility") and a.no_visibility)})
     print(f"[live] source {Path(a.source).name} {W}x{H}{' (image)' if is_image else ''}, head pose transfer "
@@ -168,7 +174,7 @@ def main():
     def commands():
         print(f"[live] gains {lp.gains}. Type '/gain <lip|eye|brow|brow2|rest|all> <v>', '/gain', '/reset' "
               "(re-take your neutral face), '/limit [region max|off]', '/gate [yaw|pitch a b | hands on|off | hold n]', "
-              "'/preset [name]', '/save <name>' or 'q' + Enter",
+              "'/euro [min_cutoff beta | off]', '/preset [name]', '/save <name>' or 'q' + Enter",
               flush=True)
         for line in sys.stdin:
             line = line.strip()
@@ -182,6 +188,19 @@ def main():
                         lp.apply_preset(parts[1])
                     print(f"[live] presets {sorted(load_presets())}; now mode {lp.mode}, pose "
                           f"{'on' if lp.pose else 'off'}, gains {lp.gains}", flush=True)
+                except ValueError as e:
+                    print(f"[live] {e}", flush=True)
+                continue
+            if line.startswith("/euro"):
+                parts = line.split()
+                try:
+                    if len(parts) == 2 and parts[1] == "off":
+                        lp.set_euro(None)
+                    elif len(parts) == 3:
+                        lp.set_euro((float(parts[1]), float(parts[2])))
+                    elif len(parts) != 1:
+                        raise ValueError("usage: /euro <min_cutoff> <beta> | /euro off")
+                    print(f"[live] euro filter {lp.euro}", flush=True)
                 except ValueError as e:
                     print(f"[live] {e}", flush=True)
                 continue
@@ -219,7 +238,7 @@ def main():
                     print("[live] usage: /save <name>", flush=True)
                     continue
                 save_preset(parts[1], lp.mode, lp.gains, lp.pose, note=f"saved from live_test {time.strftime('%F %T')}",
-                            limits=lp.limits, gates=lp.gates())
+                            limits=lp.limits, gates=lp.gates(), euro=lp.euro)
                 print(f"[live] saved preset {parts[1]!r}: mode {lp.mode}, pose {'on' if lp.pose else 'off'}, "
                       f"gains {lp.gains} -> {Path(__file__).resolve().parent / 'presets.json'}", flush=True)
                 continue

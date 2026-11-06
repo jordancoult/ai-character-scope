@@ -23,6 +23,8 @@ Type in the terminal + Enter while it runs:
 | `/preset girl` / `/preset` | switch to a saved preset (mode, gains, pose) / list presets |
 | `/save NAME` | save the current mode + gains + pose as preset NAME (`presets.json`; commit it to keep it) |
 | `/limit lip 0.25` / `/limit lip 0.14:0.21` / `/limit lip off` / `/limit` | soft limit of a region's motion (max, or knee:max) / show |
+| `/limit lipclose 0.01:0.025` | how far the lips may close past the character's resting mouth (stops them passing through each other) |
+| `/euro 1.0 5` / `/euro off` / `/euro` | smoothing of your expression (One-Euro): lower first number = calmer when still, higher second = less lag on fast moves |
 | `/gate yaw 25 40` / `/gate pitch 18 30` | your head turned / tilted too far: effect fades out from the first to the second angle |
 | `/gate cover 0.55 0.35` | mouth covered (hand, mic, cup...): fades out as mouth visibility drops from 0.55 to 0.35 |
 | `/gate score 0.65 0.5` | face confidence (turned away / profile): fades out from 0.65 down to 0.5 |
@@ -43,6 +45,12 @@ laggier driver), `--neutral-ema` (how fast your neutral face re-adapts, 0.01 ≈
   extreme frame on G-Star: lips fine to 0.18, stretched at 0.24, torn ("double mouth") at 0.31 -> `lip (0.14, 0.21)`;
   eyes shut cleanly at 0.075, squashed at 0.12 -> `eye (0.07, 0.10)`; brows distort at 0.17 -> `brow (0.10, 0.14)`;
   `brow2`/`rest` uncalibrated guesses. With the limit, x3.5 / x5 lip motion renders as a big clean open mouth.
+  **Closing** has its own limit (`lipclose (0.01, 0.025)`): the lip change is projected on a measured "mouth opens"
+  direction (`lip_open_dir.npy`); pressing the lips tighter than your neutral face, times the gain, made G-Star's lips
+  thin at 0.02 and pass through each other from 0.04.
+- **Jitter**: output jitter grows with the gains (old 1.3/1/-1 -> the gstar preset: +40 % on the user's webcam
+  footage; low light makes the webcam noisier too). A One-Euro filter on the driver expression (default
+  `euro (1.0, 5)`) brings it back below the old level (-32 %); tune live with `/euro`, saved in presets.
 - **Drop completely** (the effect fades out, JoyAI's frame plays): no face; your head yaw 25->40 deg or pitch (relative
   to your usual) 18->30 deg; the generated face's own pose 30->45 / 20->35 deg; **mouth covered**: a face-parsing net
   (BiSeNet, FP16 TensorRT, 0.6 ms) checks how much of your mouth's landmark region is lips / mouth (normal >= 0.66,

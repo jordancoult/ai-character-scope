@@ -607,6 +607,15 @@ async def main():
                                 say("usage: /gain <lip|eye|brow|brow2|rest|all> <value>")
                         elif ff is not None:
                             say(f"face gains {ff.lp.gains}")
+                    elif line.startswith("/euro") and ff is not None:    # face-pass driver smoothing (lpfast)
+                        try:
+                            if len(parts) == 2 and parts[1] == "off":
+                                ff.lp.set_euro(None)
+                            elif len(parts) == 3:
+                                ff.lp.set_euro((float(parts[1]), float(parts[2])))
+                            say(f"face euro filter {ff.lp.euro}")
+                        except ValueError:
+                            say("usage: /euro <min_cutoff> <beta> | /euro off")
                     elif line.startswith("/limit") and ff is not None:   # face-pass soft limits (lpfast)
                         try:
                             if len(parts) == 3:

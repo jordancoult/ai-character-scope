@@ -51,7 +51,14 @@ REGIONS = {
 # eyes shut cleanly at 0.075, squashed lids at 0.12; brows fine to 0.11, forehead/eyes distort at 0.17.
 # brow2 / rest are not calibrated (off in the gstar preset): conservative guesses.
 DEFAULT_LIMITS = {"lip": (0.14, 0.21), "eye": (0.07, 0.10), "brow": (0.10, 0.14), "brow2": (0.05, 0.08),
-                  "rest": (0.06, 0.10)}
+                  "rest": (0.06, 0.10),
+                  # closing past the character's resting mouth (lips pressed tighter than the speaker's neutral,
+                  # times the gain): on G-Star the lips thin at 0.02 and merge / pass each other from 0.04
+                  "lipclose": (0.01, 0.025)}
+# unit "mouth opens" direction in the lip keypoints' expression space (6 x 3, from a real driver: mean of the most
+# open quarter minus the most closed quarter); the closing limit acts on the component along it
+LIP_OPEN_DIR = Path(__file__).resolve().parent / "lip_open_dir.npy"
+DEFAULT_EURO = (1.0, 5.0)  # driver-expression One-Euro (min cutoff Hz, beta): -30 % output jitter at the user's gains
 
 # Since 2026-11-03 the defaults are the user's live-tuned presets (presets.json): rel = "gstar", abs = "girl".
 PRESETS_FILE = Path(__file__).resolve().parent / "presets.json"
@@ -62,7 +69,7 @@ def load_presets():
     return json.loads(PRESETS_FILE.read_text()) if PRESETS_FILE.exists() else {}
 
 
-def save_preset(name, mode, gains, pose=False, note="", limits=None, gates=None):
+def save_preset(name, mode, gains, pose=False, note="", limits=None, gates=None, euro="unset"):
     import json
     p = load_presets()
     p[name] = {"mode": mode, "pose": bool(pose), "gains": dict(gains), "note": note}
@@ -70,6 +77,8 @@ def save_preset(name, mode, gains, pose=False, note="", limits=None, gates=None)
         p[name]["limits"] = {k: (list(v) if v else None) for k, v in limits.items()}
     if gates is not None:
         p[name]["gates"] = dict(gates)
+    if euro != "unset":
+        p[name]["euro"] = list(euro) if euro else None
     PRESETS_FILE.write_text(json.dumps(p, indent=2) + "\n")
 
 
@@ -293,9 +302,33 @@ class Driver:
                 **dict(zip(("mouth_vis", "face_score"), self.vis(bgr, lmk) if self.vis is not None else (1.0, 1.0)))}
 
 
+class OneEuro:
+    """One-Euro filter on a GPU tensor (per element): smooths hard when the signal is still (kills webcam/landmark
+    jitter, which high gains amplify), little when it moves fast (keeps lip sync responsive). fps = call rate."""
+
+    def __init__(self, min_cutoff=1.0, beta=5.0, d_cutoff=1.0, fps=25.0):
+        self.min_cutoff, self.beta, self.d_cutoff, self.te = min_cutoff, beta, d_cutoff, 1.0 / fps
+        self.x = self.dx = None
+
+    def _a(self, cutoff):
+        tau = 1.0 / (2 * math.pi * cutoff)
+        return 1.0 / (1.0 + tau / self.te)
+
+    def __call__(self, x):
+        if self.x is None:
+            self.x, self.dx = x.clone(), torch.zeros_like(x)
+            return self.x
+        dx = (x - self.x) / self.te
+        self.dx = self.dx + self._a(self.d_cutoff) * (dx - self.dx)
+        cutoff = self.min_cutoff + self.beta * self.dx.abs()
+        a = 1.0 / (1.0 + (1.0 / (2 * math.pi * cutoff)) / self.te)
+        self.x = self.x + a * (x - self.x)
+        return self.x
+
+
 class LPPass:
     def __init__(self, mode="rel", gains=None, base_ema=0.08,
-                 neutral_ema=0.01, fade=0.25, drv_smooth=0.0, yaw_gate=(30.0, 45.0), pitch_gate=(20.0, 35.0),
+                 neutral_ema=0.01, fade=0.25, drv_smooth=0.0, euro=DEFAULT_EURO, yaw_gate=(30.0, 45.0), pitch_gate=(20.0, 35.0),
                  pose=False, limits=None, drv_yaw_gate=(25.0, 40.0), drv_pitch_gate=(18.0, 30.0), visibility=True,
                  cover_gate=(0.55, 0.35), score_gate=(0.65, 0.5), cover_hold=6):
         global DET_STREAM
@@ -313,6 +346,7 @@ class LPPass:
         self.gains = dict(DEFAULT_GAINS[mode])
         self.set_gain(**(gains or {}))
         self.base_ema, self.neutral_ema, self.fade, self.drv_smooth = base_ema, neutral_ema, fade, drv_smooth
+        self.set_euro(euro)
         self.yaw_gate, self.pitch_gate = yaw_gate, pitch_gate
         # driver gates: the speaker turned too far (yaw absolute, pitch relative to their usual pitch) or a hand over
         # the face -> the effect fades out completely; after a cover it waits `cover_hold` clear frames
@@ -331,6 +365,13 @@ class LPPass:
 
         self._warmup()
 
+    def set_euro(self, euro):
+        """Driver-expression One-Euro filter: None/off, or (min_cutoff Hz, beta). Lower min_cutoff = calmer when
+        still; higher beta = less lag on fast motion."""
+        self.euro = tuple(euro) if euro else None
+        self._euro = OneEuro(*self.euro) if self.euro else None
+        return self.euro
+
     def apply_preset(self, name):
         """Switch mode, gains and pose transfer to a saved preset (presets.json); safe while rendering."""
         p = load_presets().get(name)
@@ -344,6 +385,8 @@ class LPPass:
         self.set_limit(**{k: (tuple(v) if v else None) for k, v in p.get("limits", {}).items()})
         if p.get("gates"):
             self.set_gate(**p["gates"])
+        if "euro" in p:
+            self.set_euro(p["euro"])
         return self.set_gain(**p.get("gains", {}))
 
     def gates(self):
@@ -394,8 +437,8 @@ class LPPass:
     def set_limit(self, **lim):
         """Soft limits per region: value = (knee, max) or a single max (knee = 2/3 max); None/0 = unlimited."""
         for k, v in lim.items():
-            if k not in REGIONS:
-                raise ValueError(f"unknown region {k!r}; use {sorted(REGIONS)}")
+            if k not in REGIONS and k != "lipclose":
+                raise ValueError(f"unknown region {k!r}; use {sorted(REGIONS)} or lipclose")
             if not v:
                 self.limits[k] = None
             elif isinstance(v, (tuple, list)):
@@ -403,6 +446,11 @@ class LPPass:
             else:
                 self.limits[k] = (2.0 * float(v) / 3.0, float(v))
         masks = []
+        self._close = None
+        if self.limits.get("lipclose") and LIP_OPEN_DIR.exists():
+            U = torch.zeros(1, 21, 3, device="cuda")
+            U[0, [k for k, _ in REGIONS["lip"]]] = torch.from_numpy(np.load(LIP_OPEN_DIR)).float().cuda()
+            self._close = (U, *self.limits["lipclose"])
         for name, kps in REGIONS.items():
             if self.limits.get(name):
                 M = torch.zeros(1, 21, 3, device="cuda")
@@ -413,7 +461,15 @@ class LPPass:
         return dict(self.limits)
 
     def _soft_limit(self, D):
-        """Compress each region's expression change D (1x21x3) past its knee (tanh), never beyond its max."""
+        """Compress each region's expression change D (1x21x3) past its knee (tanh), never beyond its max; the lip
+        component along 'mouth closes' gets its own (tight) limit."""
+        if self._close is not None:
+            U, knee, mx = self._close
+            a = (D * U).sum()                       # >0 opening, <0 closing past the resting mouth
+            if float(a) < -knee:
+                c = -a
+                c_new = knee + (mx - knee) * torch.tanh((c - knee) / (mx - knee))
+                D = D + (c - c_new) * U
         for M, knee, mx in self._limit_masks:
             n = (D * M).norm()
             if float(n) > knee:
@@ -512,7 +568,9 @@ class LPPass:
         t0 = self._t("src", t0, profile)
         # slow anchors (GPU)
         e_in = drv["exp"]
-        if self.drv_smooth > 0 and self.exp_in is not None:
+        if self._euro is not None:
+            e_in = self._euro(e_in)
+        elif self.drv_smooth > 0 and self.exp_in is not None:
             e_in = self.exp_in + (1 - self.drv_smooth) * (e_in - self.exp_in)
         self.exp_in = e_in
         self.base_out = s["exp"].clone() if self.base_out is None else self.base_out.lerp_(s["exp"], self.base_ema)
