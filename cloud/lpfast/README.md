@@ -6,6 +6,8 @@ outside the face stay JoyAI's. It replaces the old `cloud/facefix` LivePortrait/
 improvement"); same bridge flag, `--facefix rel|abs`, plus `--facefix-preset gstar|girl`.
 It also animates a **still image** with the webcam (`live_test.py`, with head rotation/size transfer).
 
+See **TUNING.md** for the full parameter sheet.
+
 ## Quick start (tuning with the webcam)
 ```bash
 cd ~/personal/ai-livestream
