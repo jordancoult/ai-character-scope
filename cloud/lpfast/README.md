@@ -57,6 +57,10 @@ laggier driver), `--neutral-ema` (how fast your neutral face re-adapts, 0.01 ≈
   covered 0, glasses held over the mouth 0.32); **turned away**: RetinaFace confidence (frontal 0.76-0.90, profile
   0.04-0.5). Face confidence does not drop for partial occlusion, hence the parser. After a cover the effect waits
   6 clear frames. Both checks run every 2nd frame in the driver thread (render stays at 36 ms mean / 39 p95).
+- **No stuck states** (fixed 2026-11-05): after 8 bad driver frames in a row (mouth not visible, face confidence
+  < 0.6, yaw > 40 deg) the driver face is re-detected (the landmark tracker could lock onto a hand / cheek after a
+  cover or turn and keep the gates closed forever); the hold after a cover counts frames above the ramp's midpoint
+  (hysteresis); `/reset` re-detects too. Tested: cover 40 frames -> off; back to full 8 frames (0.3 s) after it ends.
 - Not covered yet: a hand over the **eyes only** (the parser doesn't label eyes/brows reliably at webcam scale).
 
 ### Presets (`presets.json`, tuned live by the user 2026-11-03; also the defaults of each mode)

@@ -279,10 +279,14 @@ class Driver:
         self.face = Face(detector, retry=3)  # parallel thread: back off a little so it doesn't contend
         self.face.stable_crop = True  # the driver's mouth must not change its crop (scale / position)
         self.vis = Visibility(detector, self.face.stream) if visibility else None
+        self.bad, self.since_redetect = 0, 99
 
     def reset(self):
-        """Re-take the crop reference and the visibility baseline (with the LPPass neutral reset / a new person)."""
+        """Re-take the crop reference and the visibility baseline and re-detect the face (LPPass neutral reset /
+        a new person / a stuck track)."""
         self.face.crop_ref = None
+        self.face.lmk = None
+        self.bad = 0
         if self.vis is not None:
             self.vis.reset()
 
@@ -297,9 +301,18 @@ class Driver:
         el, er = lmk[[0, 12]].mean(0), lmk[[24, 36]].mean(0)
         # head size from the inter-ocular distance (expression-independent; LivePortrait's own scale estimate moves
         # with the jaw and brows, which shrank the animated face when the mouth opened / brows went up)
+        mv, fs = self.vis(bgr, lmk) if self.vis is not None else (1.0, 1.0)
+        # self-check: the landmark tracker follows the previous frame and only re-detects on a jump, so after a hand
+        # over the face / a turn it can lock onto the wrong thing and keep the gates closed forever. After 8 bad
+        # frames in a row (mouth not visible, low face confidence, turned far) re-detect, at most every 15 frames.
+        self.since_redetect += 1
+        self.bad = self.bad + 1 if (mv < 0.45 or fs < 0.6 or abs(float(m["yaw"])) > 40) else 0
+        if self.bad >= 8 and self.since_redetect >= 15:
+            self.face.lmk, self.bad, self.since_redetect = None, 0, 0
+            if self.vis is not None:
+                self.vis.reset()  # fresh visibility values on the next frame
         return {"exp": m["exp"], "lmk": lmk, "R": m["R"], "iod": float(np.hypot(*(er - el))),
-                "yaw": float(m["yaw"]), "pitch": float(m["pitch"]),
-                **dict(zip(("mouth_vis", "face_score"), self.vis(bgr, lmk) if self.vis is not None else (1.0, 1.0)))}
+                "yaw": float(m["yaw"]), "pitch": float(m["pitch"]), "mouth_vis": mv, "face_score": fs}
 
 
 class OneEuro:
@@ -487,8 +500,10 @@ class LPPass:
         fs = drv.get("face_score", 1.0) if self.use_vis else 1.0
         c0, c1 = self.cover_gate                    # mouth visibility: full above c0, off below c1, + hold after
         g_cov = min(1.0, max(0.0, (mv - c1) / (c0 - c1)))
-        self.clear_frames = 0 if g_cov < 1 else self.clear_frames + 1
-        g_cover = g_cov if self.clear_frames >= self.cover_hold or g_cov < 1 else 0.0
+        # hold after a cover with hysteresis: a frame counts as clear above the midpoint (a value hovering near the
+        # top of the ramp, e.g. in low light, must not keep resetting the hold and leave the effect off for good)
+        self.clear_frames = 0 if g_cov < 0.5 else self.clear_frames + 1
+        g_cover = g_cov if self.clear_frames >= self.cover_hold else 0.0
         s0, s1 = self.score_gate                   # face confidence: full above s0, off below s1 (turned away)
         g_score = min(1.0, max(0.0, (fs - s1) / (s0 - s1)))
         self.gate_info = {"drv_yaw": round(drv["yaw"], 1), "drv_pitch_rel": round(drv["pitch"] - self.pitch0, 1),
