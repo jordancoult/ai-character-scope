@@ -319,6 +319,14 @@ Scope (`scope/src/scope/core/pipelines/…`):
    `SCOPE_LONGLIVE_LORA`); clean pass every Nth chunk (`clean_kv_every`), attention switch, VACE hint reuse.
 9. `longlive2/` — LongLive 2.0 as a Scope text-to-video pipeline (local port).
 10. `server/frame_processor.py`, `process.py` — input upload on a side stream; CPU uint8 output per chunk.
+11. LongLive endless memory (**on by default**; `SCOPE_ROPE_SHIFT=0` = stock): at the 1024-frame RoPE limit the
+    cached recent-window keys are rotated back instead of wiping the KV cache (stock: a jump every ~3.4 min at
+    20 fps); the sink keeps its position. `longlive/modules/causal_model.py`, `wan2_1/blocks/setup_caches.py`.
+    ~3 ms per chunk once pinned. `SCOPE_ROPE_LIMIT=N` lowers the limit for testing.
+12. Noise seed from a counter that never resets (`wan2_1/blocks/prepare_latents.py`; `SCOPE_NOISE_RESTART=1` =
+    stock), so scenes don't replay after a memory reset; the seed on the graph page is the starting seed.
+13. `server/webrtc.py` — `SCOPE_WEBRTC_LOCAL=1` (set by `start_scope.sh --bridge` unless `NETWORK=1`): WebRTC over
+    127.0.0.1 only, works with Wi-Fi off.
 StreamDiffusionV2: T5 CPU offload (`SDV2_TEXT_ENCODER_OFFLOAD`), torch 2.9.1/cu128 + cuDNN 9.17 overrides.
 
 Correctness checks: `tools/check_fused.py` compares patched vs stock outputs chunk by chunk (fused: 0.16 %
