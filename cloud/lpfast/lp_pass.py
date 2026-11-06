@@ -381,6 +381,8 @@ class LPPass:
     def set_euro(self, euro):
         """Driver-expression One-Euro filter: None/off, or (min_cutoff Hz, beta). Lower min_cutoff = calmer when
         still; higher beta = less lag on fast motion."""
+        if euro and not (float(euro[0]) > 0 and float(euro[1]) >= 0):
+            raise ValueError(f"euro: need min_cutoff > 0 and beta >= 0, got {euro[0]} {euro[1]}")
         self.euro = tuple(euro) if euro else None
         self._euro = OneEuro(*self.euro) if self.euro else None
         return self.euro
@@ -415,6 +417,8 @@ class LPPass:
         for k, v in g.items():
             if k in ("drv_yaw", "drv_pitch", "src_yaw", "src_pitch", "cover", "score"):
                 lo, hi = float(v[0]), float(v[1])
+                if k in ("cover", "score") and not (0 <= lo <= 1 and 0 <= hi <= 1):
+                    raise ValueError(f"{k}: values are 0..1, got {lo} {hi}")
                 down = k in ("cover", "score")  # these fade out as the value DROPS
                 if (hi >= lo) if down else (hi <= lo):
                     raise ValueError(f"{k}: need {'full > off' if down else 'start < off'}, got {lo} {hi}")
@@ -423,6 +427,8 @@ class LPPass:
             elif k in ("visibility", "hands"):
                 self.use_vis = bool(v)
             elif k == "cover_hold":
+                if int(v) < 0:
+                    raise ValueError(f"hold: need >= 0 frames, got {v}")
                 self.cover_hold = int(v)
             else:
                 raise ValueError(f"unknown gate {k!r}; use drv_yaw, drv_pitch, cover, score, src_yaw, src_pitch, "
@@ -455,8 +461,12 @@ class LPPass:
             if not v:
                 self.limits[k] = None
             elif isinstance(v, (tuple, list)):
+                if not 0 <= float(v[0]) < float(v[1]):
+                    raise ValueError(f"{k}: need 0 <= knee < max, got {v[0]}:{v[1]}")
                 self.limits[k] = (float(v[0]), float(v[1]))
             else:
+                if float(v) <= 0:
+                    raise ValueError(f"{k}: max must be > 0 (or off), got {v}")
                 self.limits[k] = (2.0 * float(v) / 3.0, float(v))
         masks = []
         self._close = None
