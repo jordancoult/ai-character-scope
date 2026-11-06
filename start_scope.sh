@@ -16,6 +16,9 @@
 #   ORIENTATION=landscape                 16:9 (576x320 -> 1280x720) instead of 9:16 portrait
 #   INPUT_IMAGE=assets/x.png              no camera: animate this still image (also its reference unless CHARACTER_REF set)
 #   BRIDGE_ARGS="--size 640 352 --seed 7"  extra scope_bridge.py arguments (generation size, VAE, seed)
+#   NETWORK=1                             allow the network (bridge mode): WebRTC over the real addresses + STUN,
+#                                         control page on 0.0.0.0 (phone on the same Wi-Fi: http://<laptop-ip>:8090/remote).
+#                                         Default: everything over 127.0.0.1, keeps running with Wi-Fi off.
 #   REMOTE_TOKEN=...                      require this token on the control page (all routes); unset = no auth.
 #                                         Read by scope_bridge.py from the environment (kept off the command line).
 #
@@ -121,6 +124,10 @@ if ss -ltn | grep -q ":$PORT "; then
   exit 1
 fi
 
+# Bridge mode is same-machine only unless NETWORK=1: WebRTC over 127.0.0.1, no STUN/TURN (works offline).
+# Plain web-UI mode keeps the network path (the browser needs it).
+if [ "$BRIDGE" = 1 ] && [ "${NETWORK:-0}" != 1 ]; then export SCOPE_WEBRTC_LOCAL=1; fi
+
 # --- Scope server (pinned to E-cores 6-13 to keep CPU package temps down) ---
 taskset -c 6-13 scope/.venv/bin/daydream-scope --host 127.0.0.1 --port "$PORT" --no-browser \
   > "$LOG_DIR/scope-server.log" 2>&1 &
@@ -145,7 +152,7 @@ if [ "$BRIDGE" = 1 ]; then
     --output /dev/video10 --preset "${PRESET:-30}" ${NOISE_MODE:+--noise-mode "$NOISE_MODE"} \
     --pipeline "${MODEL:-streamdiffusionv2}" \
     --prompt "${PROMPT:-a stylized 3D animated character, Pixar style render}" \
-    "${REF_ARGS[@]}" "${EXTRA_ARGS[@]}" ${BRIDGE_ARGS:-} &
+    "${REF_ARGS[@]}" "${EXTRA_ARGS[@]}" $([ "${NETWORK:-0}" = 1 ] && echo --network) ${BRIDGE_ARGS:-} &
   PIDS+=($!)
   echo "[scope] bridge: $INPUT -> Scope (${ORIENTATION:-portrait}) -> /dev/video10 (AI_Scope_Cam)"
   echo "[scope] live controls (FPS, noise, reference, prompt): http://127.0.0.1:8090   (first ~30 s after start are slow while torch.compile warms up)"

@@ -111,7 +111,7 @@ const resets = body => Object.keys(body).some(k => RESET_KEYS.includes(k)) || ('
 const NAMES = {noise:'Noise level', attn_sink:'Attention to sink', attn_recent:'Attention to recent', attn_current:'Attention to current',
   attn_text:'Prompt strength', vace_scale:'Conditioning strength', zoom:'Zoom', y_offset:'Framing', sharpen:'Sharpen', upscale:'Upscaler',
   noise_mode:'Noise pattern', noise_controller:'Motion-adaptive noise', transition_steps:'Prompt blending', attn_on:'Attention steering',
-  steps:'Diffusion steps', sink_frames:'Sink size', depth:'Depth input', vace_input:'Camera → VACE', ref:'Reference image', start:'Start image', prompt:'Prompt', ref_camera:'Camera snapshot as reference', ref_source:'', start_source:''};
+  seed:'Seed', steps:'Diffusion steps', sink_frames:'Sink size', depth:'Depth input', vace_input:'Camera → VACE', ref:'Reference image', start:'Start image', prompt:'Prompt', ref_camera:'Camera snapshot as reference', ref_source:'', start_source:''};
 function setP(body) {
   const r = resets(body), what = Object.keys(body).map(k => NAMES[k] ?? k).filter(Boolean).join(', ');
   return post('/params', body).then(res => {
@@ -139,6 +139,7 @@ const NODES = {
   depth:   {t:'Depth', k:'cond', x:300, y:20, ins:['frames'], outs:['depth'], body:()=> S.depth_available ? `<label class="lrow">Compute depth <select data-act="depth-stride">${[[1,'every frame'],[2,'every 2 frames'],[4,'every 4 frames (default)'],[12,'once per chunk (old, jerky)']].map(([v,l])=>`<option value="${v}" ${(S.depth_stride||4)==v?'selected':''}>${l}</option>`).join('')}</select></label>${slider('depth_cutoff', 'Body only (drop background)', S.depth_cutoff || 0, 0, 0.9, 0.05)}<span class="muted">0 = full scene depth. ~0.5 keeps just you; the model invents the rest</span><label class="lrow">Cut out person (no box edges)${TAG_I} <input type="checkbox" data-act="person-seg" ${S.person_seg?'checked':''}></label>${slider('depth_keep', 'Auto body-only: keep nearest fraction (0 = use cutoff)', S.depth_keep || 0, 0, 0.9, 0.05)}${slider('person_hint', 'Identity hint (your colours inside your outline)', S.person_hint || 0, 0, 0.9, 0.02)}` : `<span class="muted">Not available</span>`},
   enc:     {t:'VAE encode', k:'cond', x:300, y:190, ins:['frames'], outs:['latent'], body:()=>`<span class="muted">${S.pipeline!=='streamdiffusionv2'?'lighttae':'tae'} · 4 frames → 1 latent frame</span>`},
   noise:   {t:'Noise', k:'cond', x:300, y:330, outs:['noise'], body:()=>`<span class="muted">Pattern${TAG_I}</span><select data-act="noise-mode">${['auto','fixed','random'].map(m=>`<option ${S.noise_mode===m?'selected':''}>${m}</option>`).join('')}</select><span class="muted">Pattern now: ${S.noise_pattern}</span>
+            <label class="lrow" title="Seed of the random noise. A new seed gives a different scene from the next chunk on (memory kept). Enter applies; empty = default (${S.default_seed})">Seed${TAG_I} <input type="number" data-act="seed" min="0" step="1" value="${S.seed ?? ''}" style="width:90px"> <button data-act="seed-rand" class="sec" title="Random seed">🎲</button> <button data-act="seed-def" class="sec" title="Back to the default seed (${S.default_seed})">↺</button></label>
             <label><input type="checkbox" data-act="noise-ctl" ${S.noise_controller?'checked':''}> motion-adaptive level${TAG_I}</label>
             ${slider('feedback', 'Feedback: start from the last output (0 = off)', S.feedback || 0, 0, 1, 0.05)}<span class="muted">Each chunk refines the previous result instead of restarting from the camera. Feedback 1 = no camera at all. Noise = how much is reinvented each chunk (variety vs. polish)</span>
             ${(S.feedback_mode||'last')==='extrapolate' ? slider('feedback_motion', 'Motion carried forward (1 = all)', S.feedback_motion ?? 1, 0, 1.5, 0.05) : ''}<label class="lrow">Feedback source <select data-act="feedback-mode">${[['last','newest frame (steady)'],['extrapolate','continue motion'],['chunk','whole chunk']].map(([v,l])=>`<option value="${v}" ${(S.feedback_mode||'last')===v?'selected':''}>${l}</option>`).join('')}</select></label>`},
@@ -478,6 +479,7 @@ world.addEventListener('change', e => {
   else if (act === 'attn-backend') setP({attention_backend: v});
   else if (act === 'vace-reuse') setP({vace_hint_reuse: e.target.checked});
   else if (act === 'feedback-mode') setP({feedback_mode: e.target.value});
+  else if (act === 'seed') sendSeed(v);
   else if (act === 'depth-stride') setP({depth_stride: +e.target.value});
   else if (['zoom', 'y_offset', 'sharpen', 'depth_cutoff', 'place_scale', 'place_x', 'place_y', 'person_hint', 'depth_keep', 'feedback', 'feedback_motion'].includes(act)) e.target.blur();
   const lk = e.target.dataset.launch;
@@ -498,6 +500,8 @@ world.addEventListener('input', e => {
   }
   if (e.target.dataset.launch === 'seed') { L.seed = e.target.value; $('cmd').textContent = launchCmd(); }
 });
+let seedSent = null;  // Enter and the blur after it both report the value: send it once
+function sendSeed(v) { v = String(v).trim(); if (v === seedSent || v === String(S.seed)) return; seedSent = v; setP({seed: v}); }
 function launchEnv() {
   const env = {};
   for (const k of ['SCOPE_KV_FRAMES','SCOPE_FUSED_KV','SCOPE_COMPILE_BLOCKS','SCOPE_COMPILE_TAE','SCOPE_FP8_ROWWISE','SCOPE_NOISE_T_OFFSET','SCOPE_OUTPUT_TARGET_FRAMES']) env[k] = String(L[k] ?? '');
@@ -524,12 +528,15 @@ async function restartNow() {
 }
 world.addEventListener('click', e => {
   if (e.target.dataset.act === 'restart') restartNow();
+  if (e.target.dataset.act === 'seed-rand') { seedSent = null; setP({seed: Math.floor(Math.random() * 2147483647)}); }
+  if (e.target.dataset.act === 'seed-def') { seedSent = null; setP({seed: ''}); }
   if (e.target.dataset.act === 'copy-cmd') {
     const t = $('cmd').textContent;
     (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast('Command copied'), () => toast('Select the command and copy it'));
   }
 });
 world.addEventListener('keydown', e => {
+  if (e.target.dataset.act === 'seed' && e.key === 'Enter') { sendSeed(e.target.value); e.target.blur(); }
   if (e.target.dataset.act === 'prompt' && e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault(); setP({prompt: e.target.value}); e.target.blur();
   }

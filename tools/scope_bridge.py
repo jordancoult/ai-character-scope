@@ -28,7 +28,7 @@ from pathlib import Path
 import httpx
 import torch
 from aiohttp import web
-from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc import MediaStreamTrack, RTCConfiguration, RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
 from aiortc.contrib.media import MediaPlayer
 from av import VideoFrame
 
@@ -81,6 +81,9 @@ parser.add_argument("--control-port", type=int, default=8090, help="Slider page 
 parser.add_argument("--remote-token", default=os.environ.get("REMOTE_TOKEN") or None,
                     help="Require this token on every control-page route (?token=... once, then a cookie). "
                          "Default: env REMOTE_TOKEN; unset = no auth (local use). See tools/remote_tunnel.sh")
+parser.add_argument("--network", action="store_true",
+                    help="Allow the network: WebRTC to Scope over the laptop's real addresses (+ STUN) and the control "
+                         "page on 0.0.0.0 (phone on the same Wi-Fi). Default: 127.0.0.1 only, works with Wi-Fi off")
 parser.add_argument("--latency-probe", action="store_true",
                     help="Measure end-to-end latency using bright flashes in the input (assets/latency_flash.mp4)")
 parser.add_argument("--record-input", default=None, help="Also save the cropped camera frames sent to Scope (.mp4)")
@@ -107,6 +110,7 @@ if args.noise_mode is None:
 
 H, W = args.size
 OH, OW = args.out_size
+DEFAULT_SEED = args.seed if args.seed is not None else 42
 state = {"preset": args.preset, "fps": 0.0, "upscale": None, "noise": args.noise_scale,
          "noise_mode": args.noise_mode, "gpu_temp": None, "gpu_watts": None, "gpu_thermal_throttle": False,
          "cpu_temp": None,
@@ -127,6 +131,8 @@ state = {"preset": args.preset, "fps": 0.0, "upscale": None, "noise": args.noise
          "place_scale": 1.0, "place_x": 0.5, "place_y": 0.6,
          # person hint: with depth on, pull the person's region toward the camera image (identity) 0..1
          "person_hint": 0.0, "depth_keep": 0.0, "person_seg": False, "place_fade_bottom": 0.12, "place_ground": False, "depth_stride": 4, "feedback": 0.0, "feedback_mode": "last", "feedback_motion": 1.0, "skip_clean_kv": False, "clean_kv_every": 1, "attention_backend": "default", "vace_hint_reuse": False,
+         # live noise seed (base_seed); default = the load seed (Scope's default is 42)
+         "seed": DEFAULT_SEED,
          "prompt": args.prompt, "ref": [str(Path(r).resolve()) for r in args.ref] if args.ref else []}
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 TMP = Path(__file__).resolve().parents[1] / ".tmp"
@@ -136,7 +142,7 @@ OVERRIDES = {"depth": None, "steps": None, "start": None, "vace_scale": args.vac
              "upscale_override": None, "vace_input": False, "sink_frames": None, "noise_controller": False,
              "transition_steps": 0, "zoom": 1.0, "y_offset": 0.0, "sharpen": 0.6, "depth_cutoff": 0.0, "sink_refresh_s": 0.0, "place_scale": 1.0, "place_x": 0.5,
              "place_y": 0.6, "person_hint": 0.0, "depth_keep": 0.0, "person_seg": False, "place_fade_bottom": 0.12, "place_ground": False, "depth_stride": 4, "feedback": 0.0, "feedback_mode": "last", "feedback_motion": 1.0, "skip_clean_kv": False, "clean_kv_every": 1, "attention_backend": "default", "vace_hint_reuse": False, "noise": args.noise_scale,
-             "ref_source": "ref", "start_source": "start"}
+             "ref_source": "ref", "start_source": "start", "seed": DEFAULT_SEED}
 if TEXT_MODEL:  # LongLive 2.0 defaults: clean pass every 2nd chunk (exact attention = "default" there)
     OVERRIDES["clean_kv_every"] = state["clean_kv_every"] = 2
 _restore = os.environ.pop("SCOPE_BRIDGE_RESTORE", None)
@@ -554,7 +560,12 @@ async def main() -> None:
         else:
             player = MediaPlayer(args.input, loop=True)
 
-        pc = RTCPeerConnection()
+        if args.network:
+            pc = RTCPeerConnection()
+        else:  # loopback only: aioice never offers 127.0.0.1 itself, so the session rode the Wi-Fi address
+            import aioice.ice
+            aioice.ice.get_host_addresses = lambda use_ipv4=True, use_ipv6=False: ["127.0.0.1"]
+            pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         channel = pc.createDataChannel("parameters", ordered=True)
         if player is not None:
             source_track = player.video
@@ -608,7 +619,7 @@ async def main() -> None:
         def apply_preset(preset: int) -> None:
             state["preset"] = preset
             current_upscaler()
-            send(preset_params(preset, with_ref=True))
+            send({**preset_params(preset, with_ref=True), "base_seed": state["seed"]})
             print(f"[bridge] preset -> {PRESETS[preset]['label']}", flush=True)
 
         @pc.on("track")
@@ -663,7 +674,7 @@ async def main() -> None:
         await pc.setLocalDescription(await pc.createOffer())
         params = {"pipeline_ids": [args.pipeline], "input_mode": "text" if TEXT_MODEL else "video",
                   "prompts": [{"text": state["prompt"], "weight": 1.0}], "manage_cache": True,
-                  "vace_enabled": True, **preset_params(state["preset"], with_ref=True)}
+                  "vace_enabled": True, "base_seed": state["seed"], **preset_params(state["preset"], with_ref=True)}
         params.pop("reset_cache")
         sent_params.update(params)
         r = await client.post("/api/v1/webrtc/offer", json={
@@ -716,7 +727,7 @@ async def main() -> None:
                  "sharpen": state["sharpen"], "depth_cutoff": state["depth_cutoff"], "sink_refresh_s": state["sink_refresh_s"], "place_scale": state["place_scale"],
                  "place_x": state["place_x"], "place_y": state["place_y"], "person_hint": state["person_hint"],
                  "depth_keep": state["depth_keep"], "person_seg": state["person_seg"], "place_fade_bottom": state["place_fade_bottom"], "place_ground": state["place_ground"],
-                 "depth_stride": state["depth_stride"], "feedback": state["feedback"], "feedback_mode": state["feedback_mode"], "feedback_motion": state["feedback_motion"], "skip_clean_kv": state["skip_clean_kv"], "clean_kv_every": state["clean_kv_every"], "attention_backend": state["attention_backend"], "vace_hint_reuse": state["vace_hint_reuse"], "launch": launch_settings(),
+                 "depth_stride": state["depth_stride"], "feedback": state["feedback"], "feedback_mode": state["feedback_mode"], "feedback_motion": state["feedback_motion"], "skip_clean_kv": state["skip_clean_kv"], "clean_kv_every": state["clean_kv_every"], "attention_backend": state["attention_backend"], "vace_hint_reuse": state["vace_hint_reuse"], "seed": state["seed"], "default_seed": DEFAULT_SEED, "launch": launch_settings(),
                  "output_warning": state.get("output_warning"),
                  "ref": [Path(r).name for r in state["ref"]],
                  "refs": sorted(f.name for f in ASSETS.glob("*.png"))}))
@@ -836,6 +847,10 @@ async def main() -> None:
                 if "attn_on" in body:
                     state["attn_on"] = bool(body["attn_on"])
                     update["attention_weights"] = attention_weights()
+                if "seed" in body:  # live noise seed: new noise from the next chunk on, like a prompt change
+                    v = body["seed"]
+                    state["seed"] = DEFAULT_SEED if v in ("", None) else max(0, min(2**31 - 1, int(v)))
+                    update["base_seed"] = state["seed"]
                 if "start" in body:
                     name = Path(body["start"] or "").name
                     state["start"] = name if name and (ASSETS / name).is_file() else None
@@ -868,6 +883,7 @@ async def main() -> None:
                     "start_image": state["start"], "conditioning_strength": state["vace_scale"],
                     "attention_steering_on": state["attn_on"], "attention_weights": state["attn"],
                     "camera_as_vace_input": state["vace_input"], "upscale_override": state["upscale_override"],
+                    "seed": state["seed"],
                     "graph_layout": body.get("layout"),
                     "upscale": state["upscale"], "size": [H, W], "out_size": [OH, OW],
                     "last_fps": round(state["fps"], 1),
@@ -902,7 +918,7 @@ async def main() -> None:
                            "steps": d.get("steps"), "start": d.get("start_image"), "vace_scale": d.get("conditioning_strength"),
                            "attn_on": d.get("attention_steering_on"), "attn": d.get("attention_weights"),
                            "vace_input": d.get("camera_as_vace_input"), "upscale_override": d.get("upscale_override"),
-                           "preset": d.get("preset"), "prompt": d.get("prompt"),
+                           "preset": d.get("preset"), "prompt": d.get("prompt"), "seed": d.get("seed"),
                            "ref": [f"assets/{n}" for n in d.get("reference_image") or []]}
                     launch = {"model": d.get("model"), "size": d.get("size"), "vae": d.get("vae")}
                     src = {k: v for k, v in src.items() if v is not None or k in ("depth", "steps", "start", "upscale_override")}
@@ -930,6 +946,7 @@ async def main() -> None:
                 current_upscaler()
                 params = preset_params(preset, with_ref=True)
                 params["prompts"] = [{"text": state["prompt"], "weight": 1.0}]
+                params["base_seed"] = state["seed"]
                 send(params)
                 mismatch = []
                 if launch.get("model") and launch["model"] != args.pipeline:
@@ -946,6 +963,7 @@ async def main() -> None:
                 body = await request.json()
                 env = {k: str(v) for k, v in (body.get("env") or {}).items() if k in LAUNCH_ENV + LAUNCH_EXTRA}
                 env["PRESET"] = str(state["preset"])
+                env["NETWORK"] = "1" if args.network else "0"  # restart keeps the network mode
                 env["NOISE_MODE"] = state["noise_mode"]
                 env["PROMPT"] = state["prompt"]
                 env["CHARACTER_REF"] = " ".join(f"assets/{Path(r).name}" for r in state["ref"])
@@ -998,8 +1016,18 @@ async def main() -> None:
             app.router.add_post("/preset/{fps:\\d+}", set_preset)
             runner = web.AppRunner(app)
             await runner.setup()
-            await web.TCPSite(runner, "127.0.0.1", args.control_port).start()
+            await web.TCPSite(runner, "0.0.0.0" if args.network else "127.0.0.1", args.control_port).start()
             print(f"[bridge] live controls: http://127.0.0.1:{args.control_port}", flush=True)
+            if args.network:
+                import socket
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+                        sk.connect(("10.255.255.255", 1)); lan = sk.getsockname()[0]
+                except OSError:
+                    lan = "<laptop-ip>"
+                print(f"[bridge] --network: phone on the same Wi-Fi: http://{lan}:{args.control_port}/remote"
+                      + ("" if args.remote_token else "  (WARNING: no REMOTE_TOKEN, anyone on this network gets the controls)"),
+                      flush=True)
             if args.remote_token:
                 print(f"[bridge] remote token auth ON (every route needs ?token=... or its cookie); "
                       f"phone view: /remote", flush=True)
